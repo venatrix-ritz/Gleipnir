@@ -302,7 +302,7 @@ cur=$(num "$(rd "$LIM")")
 if is_clamped "$cur" && [ "$cur" != "$maxv" ]; then state=clamped; saved=""; release "leftover clamp from an earlier run"; fi
 
 while :; do
-    cap=$(num "$(rd "$B/capacity")"); on=$(num "$(rd "$U/online")"); st=$(rd "$B/status"); cur_i=$(abs "$(rd "$B/current_now")")
+    cap=$(num "$(rd "$B/capacity")"); on=$(num "$(rd "$U/online")"); st=$(rd "$B/status"); cur_i=$(abs "$(rd "$B/current_now")"); cur_s=$(num "$(rd "$B/current_now")")
     # Monitoring: nothing is clamped, a charger is attached and the battery is clearly below the cap, yet it is not charging.
     # Seen on the Thor on 2026-10-08: after a clamp held for about 90 s at 80 % was released, the status stayed 'Not charging'.
     if [ "$state" = released ] && [ "$on" = 1 ] && [ "$cap" -lt "$RELEASE_AT" ] && [ "$st" != Charging ]; then
@@ -332,9 +332,11 @@ while :; do
             if [ "$on" != 1 ]; then release "charger unplugged"
             elif [ "$cap" -le "$RELEASE_AT" ]; then release "battery down to ${cap}%"
             elif [ $((SECONDS - clamped_at)) -ge "$SETTLE_S" ]; then
-                if [ "$st" = Charging ] && [ "$cur_i" -gt "$WATCH_UA" ]; then bad=$((bad + 1)); else bad=0; fi
+                # current_now is positive while charging and negative while discharging; the status says Charging in both cases (seen 2026-10-08
+                # under a game load with a weak charger), so only a positive current counts as charging.
+                if [ "$st" = Charging ] && [ "$cur_s" -gt "$WATCH_UA" ]; then bad=$((bad + 1)); else bad=0; fi
                 if [ "$bad" -ge "$BAD_LIMIT" ]; then
-                    log err "WATCHDOG: still charging at ${cur_i}uA ${SETTLE_S}s after the clamp; the limit has no effect on this Thor. Releasing, deleting the marker, exiting. $(snap)"
+                    log err "WATCHDOG: still charging at ${cur_s}uA ${SETTLE_S}s after the clamp; the limit has no effect on this Thor. Releasing, deleting the marker, exiting. $(snap)"
                     release "limit ineffective"; rm -f "$MARKER"; exit 78
                 fi
             fi
