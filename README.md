@@ -6,7 +6,7 @@ A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin for t
 
 ## What it does
 - Watches the battery. When the Thor is plugged in at 80 % or more it sets the battery manager's charge current limit to the "stop charging" value; when you unplug it, or the level falls to 77 %, it puts back the value it found.
-- Ships a **safety test** (about 40 s) that proves, on your Thor, that the limit stops charging and that charging resumes after release. Only a pass arms the daemon, and the pass is tied to your kernel version.
+- Ships a **safety test** (usually two to four minutes: the limit takes about a minute to act) that proves, on your Thor, that the limit stops charging and that charging resumes after release. Only a pass arms the daemon, and the pass is tied to your kernel version.
 - Logs every decision to the journal with a battery snapshot, runs a watchdog for a limit that does nothing, and restores the limit on every exit path.
 
 ## Requirements

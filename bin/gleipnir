@@ -52,6 +52,9 @@ MIN_HOLD_S="${GLEIPNIR_MIN_HOLD_S:-120}"
 HEARTBEAT_S="${GLEIPNIR_HEARTBEAT_S:-600}"
 WATCH_UA=200000                      # charging above this while clamped means the clamp is not working
 BAD_LIMIT=3
+APPLY_WAIT_S="${GLEIPNIR_APPLY_WAIT_S:-120}"   # how long a write may take to show in the node (about 60 s was seen on the Thor)
+HOLD_S="${GLEIPNIR_HOLD_S:-20}"                # a restored node must keep reading released this long before the restore counts
+WAIT_STEP_DS="${GLEIPNIR_WAIT_STEP_DS:-10}"    # poll step while waiting, in tenths of a second
 
 # --- helpers ---------------------------------------------------------------------------------------------------
 rd()  { cat "$1" 2>/dev/null || echo "?"; }
@@ -81,17 +84,48 @@ maxv=$(num "$(rd "$MAX")"); [ "$maxv" -gt "$CLAMP_DETECT" ] || maxv=9000000
 is_clamped() { [ "$(num "${1:-}")" -le "$CLAMP_DETECT" ]; }
 
 FAILS=0
-# write_limit VALUE exact|released : write, read back, count failures. "released" accepts any readback above
-# CLAMP_DETECT because the firmware may adjust its own value right after.
-write_limit() {
-    local v=$1 mode=$2 rb ok=0
-    echo "$v" > "$LIM" 2>/dev/null
-    rb=$(rd "$LIM")
-    if [ "$mode" = exact ]; then [ "$rb" = "$v" ] && ok=1; else [ "$(num "$rb")" -gt "$CLAMP_DETECT" ] && ok=1; fi
-    if [ "$ok" = 1 ]; then FAILS=0; return 0; fi
-    FAILS=$((FAILS + 1)); log err "write of $v to $LIM did not stick (readback '$rb'; failure $FAILS in a row)"
+# --- begin settle (tests/run-tests.sh runs this block against a node that shows writes late) ---------------------
+# The limit node is slow. Observed on the Thor on 2026-10-08: right after the test wrote the clamp the node still read
+# the old value, and about a minute later it read the clamp and charging had stopped. A write is therefore judged by
+# waiting for the node to show it, up to APPLY_WAIT_S, and a restore only counts once the node has kept showing the
+# released value for HOLD_S, because a clamp written earlier can still be on its way.
+step_sleep() { sleep "$((WAIT_STEP_DS / 10)).$((WAIT_STEP_DS % 10))"; }
+steps_for() { echo $(($1 * 10 / WAIT_STEP_DS)); }   # seconds -> poll steps
+node_write() { echo "$1" > "$LIM" 2>/dev/null; }
+value_ok() {   # value_ok VALUE exact|released READBACK ; "released" accepts any readback above CLAMP_DETECT,
+               # because the firmware may adjust its own value right after
+    if [ "$2" = exact ]; then [ "$3" = "$1" ]; else [ "$(num "$3")" -gt "$CLAMP_DETECT" ]; fi
+}
+wait_for() {   # wait_for VALUE exact|released : poll the node until it shows the value or APPLY_WAIT_S has passed; RB = last readback
+    local i=0 max; max=$(steps_for "$APPLY_WAIT_S")
+    while :; do
+        RB=$(rd "$LIM")
+        value_ok "$1" "$2" "$RB" && return 0
+        [ "$i" -ge "$max" ] && return 1
+        i=$((i + 1)); step_sleep
+    done
+}
+write_limit() {   # write_limit VALUE exact|released : write, wait for the node to show it, count failures
+    node_write "$1"
+    if wait_for "$1" "$2"; then FAILS=0; return 0; fi
+    FAILS=$((FAILS + 1)); log err "write of $1 to $LIM did not show in ${APPLY_WAIT_S}s (readback '$RB'; failure $FAILS in a row)"
     return 1
 }
+ensure_released() {   # ensure_released TARGET : put the limit back and see that it STAYS back; up to 3 rounds
+    local round=0 i max; max=$(steps_for "$HOLD_S")
+    while [ "$round" -lt 3 ]; do
+        round=$((round + 1))
+        write_limit "$1" released || continue
+        i=0
+        while [ "$i" -lt "$max" ]; do
+            step_sleep; i=$((i + 1))
+            is_clamped "$(num "$(rd "$LIM")")" && continue 2   # a clamp landed after our write: write again
+        done
+        return 0
+    done
+    return 1
+}
+# --- end settle -------------------------------------------------------------------------------------------------
 
 marker_ok() {   # sets MARKER_WHY
     MARKER_WHY=""
@@ -122,7 +156,7 @@ fi
 if [ "$mode" = restore ]; then
     cur=$(num "$(rd "$LIM")")
     if is_clamped "$cur" && [ "$cur" != "$maxv" ]; then
-        echo "$maxv" > "$LIM" 2>/dev/null && log warning "--restore: found leftover clamp ($cur), restored $maxv" || log err "--restore could NOT restore $maxv to $LIM"
+        if ensure_released "$maxv"; then log warning "--restore: found leftover clamp ($cur), restored $maxv"; else log err "--restore could NOT restore $maxv to $LIM"; fi
     fi
     exit 0
 fi
@@ -146,9 +180,9 @@ if [ "$mode" = status ]; then
 fi
 
 if [ "$mode" = test ]; then
-    CLAMP_S="${GLEIPNIR_CLAMP_S:-20}"; BASE_S="${GLEIPNIR_BASE_S:-6}"; AFTER_S="${GLEIPNIR_AFTER_S:-10}"; SAMPLE_S="${GLEIPNIR_SAMPLE_S:-2}"
+    CLAMP_S="${GLEIPNIR_CLAMP_S:-180}"; BASE_S="${GLEIPNIR_BASE_S:-6}"; AFTER_S="${GLEIPNIR_AFTER_S:-120}"; SAMPLE_S="${GLEIPNIR_SAMPLE_S:-2}"
     echo "==> Limit node: $LIM ($KIND); found value: $(rd "$LIM"); would write: $CLAMP_VAL; kernel: $KERNEL"
-    echo "==> Plan: sample ${BASE_S}s, clamp for ${CLAMP_S}s, put the found value back, sample ${AFTER_S}s. PASS needs: charging stops (or falls under a quarter of the baseline) while clamped AND resumes after the release."
+    echo "==> Plan: sample ${BASE_S}s, write the clamp and wait up to ${CLAMP_S}s for charging to stop (it took about a minute on the Thor), put the found value back and make sure it stays back (${HOLD_S}s), then wait up to ${AFTER_S}s for charging to resume. PASS needs: charging stops (or falls under a quarter of the baseline) while clamped AND resumes after the release."
     echo "==> Safety: the found value is restored on any exit; aborts and restores if the charger is unplugged, the battery passes 45 C, or the level drops 2 points."
     if [ "$run" != 1 ]; then echo "Plan only; nothing was written. Add --run (as root, charger plugged in, battery 10-90 %)."; exit 0; fi
     if [ "$(id -u)" != 0 ] && [ "${GLEIPNIR_ALLOW_NONROOT:-0}" != 1 ]; then echo "Run as root: sudo $0 --test --run" >&2; exit 4; fi
@@ -176,7 +210,7 @@ if [ "$mode" = test ]; then
     restore_test() {
         [ "$restored" = 1 ] && return; restored=1
         [ "$touched" = 1 ] || return 0      # never wrote the clamp, nothing to put back
-        if write_limit "$orig" released || write_limit "$maxv" released; then
+        if ensure_released "$orig" || ensure_released "$maxv"; then
             echo "==> Restored the limit: node reads $(rd "$LIM") (found $orig)"; tlog "restored limit, node reads $(rd "$LIM")"
         else
             echo "!!! COULD NOT RESTORE. Run: echo $maxv | sudo tee $LIM" >&2; log err "test could not restore the limit; run: echo $maxv | sudo tee $LIM"
@@ -188,8 +222,7 @@ if [ "$mode" = test ]; then
     if [ "$base" -lt 300000 ]; then echo "Refusing: charging current is only ${base} uA, too low for a meaningful test. Retry with the Thor idle and the battery lower." >&2; exit 4; fi
     echo "-- clamp: writing $CLAMP_VAL"; tlog "clamping to $CLAMP_VAL (baseline ${base}uA)"
     touched=1
-    write_limit "$CLAMP_VAL" exact || { echo "FAIL: the kernel refused the write." >&2; rm -f "$MARKER"; exit 5; }
-    sleep 1
+    node_write "$CLAMP_VAL" || { echo "FAIL: the kernel refused the write." >&2; rm -f "$MARKER"; exit 5; }   # the node shows it late: judge by the charging current below
     effective=0; abort=""; eff_streak=0; t=0
     while [ "$t" -lt "$CLAMP_S" ]; do
         sample clamped
@@ -198,13 +231,21 @@ if [ "$mode" = test ]; then
         [ "$tmp" -lt 450 ] || { abort="battery reached ${tmp} (0.1 C)"; break; }
         [ "$cap" -gt $((cap0 - 2)) ] || { abort="battery level fell from $cap0 to $cap"; break; }
         if [ "$st" != Charging ] || [ "$i" -lt $((base / 4)) ]; then eff_streak=$((eff_streak + 1)); else eff_streak=0; fi
-        [ "$eff_streak" -ge 3 ] && effective=1
+        [ "$eff_streak" -ge 3 ] && { effective=1; break; }
         sleep "$SAMPLE_S"; t=$((t + SAMPLE_S))
     done
     echo "-- restore"; restore_test
     if [ -n "$abort" ]; then echo "ABORTED: $abort. Nothing was verified." >&2; tlog "aborted: $abort"; rm -f "$MARKER"; exit 5; fi
-    avgcur "$AFTER_S" after; resumed=0
-    st=$(rd "$B/status"); [ "$st" = Charging ] && [ "$(abs "$(rd "$B/current_now")")" -ge $((base / 4)) ] && resumed=1
+    echo "-- waiting for charging to resume (up to ${AFTER_S}s)"
+    resumed=0; streak=0; t=0
+    while [ "$t" -lt "$AFTER_S" ]; do
+        sample after
+        st=$(rd "$B/status"); i=$(abs "$(rd "$B/current_now")")
+        if [ "$st" = Charging ] && [ "$i" -ge $((base / 4)) ]; then streak=$((streak + 1)); else streak=0; fi
+        [ "$streak" -ge 2 ] && { resumed=1; break; }
+        [ "$(num "$(rd "$U/online")")" = 1 ] || break      # unplugged: charging cannot resume, stop waiting
+        sleep "$SAMPLE_S"; t=$((t + SAMPLE_S))
+    done
     back=$(num "$(rd "$LIM")"); released_ok=0; is_clamped "$back" || released_ok=1
     echo; echo "================ RESULT ================"
     echo "baseline ${base} uA | limit took effect: $([ "$effective" = 1 ] && echo yes || echo NO) | charging resumed after release: $([ "$resumed" = 1 ] && echo yes || echo NO) | node released: $([ "$released_ok" = 1 ] && echo yes || echo NO)"
@@ -229,9 +270,9 @@ state=released; saved=""; clamped_at=0; last_change=-$MIN_HOLD_S; bad=0; armed=-
 release() {   # release WHY ; safe direction, never rate-limited
     [ "$state" = clamped ] || return 0
     local target="${saved:-$maxv}"; is_clamped "$target" && target=$maxv
-    if write_limit "$target" released; then
+    if ensure_released "$target"; then
         log info "RELEASE ($1): restored $target; $(snap)"
-    elif write_limit "$maxv" released; then
+    elif ensure_released "$maxv"; then
         log warning "RELEASE ($1): could not put $target back, restored the node maximum $maxv; $(snap)"
     else
         log err "COULD NOT RELEASE the limit ($1). Run: echo $maxv | sudo tee $LIM"; return 1
@@ -241,12 +282,17 @@ release() {   # release WHY ; safe direction, never rate-limited
 clamp() {
     local c; c=$(num "$(rd "$LIM")")
     is_clamped "$c" || saved=$c
+    # Record the clamp BEFORE writing it: a TERM that arrives between the write and the bookkeeping must still release it
+    state=clamped; clamped_at=$SECONDS; last_change=$SECONDS
     if write_limit "$CLAMP_VAL" exact; then
-        state=clamped; clamped_at=$SECONDS; last_change=$SECONDS; bad=0
+        bad=0
         log info "CLAMP at ${cap}%: limit ${saved:-unknown} -> $CLAMP_VAL; $(snap)"
+    else
+        state=released; saved=""   # it never showed in time; a clamp that lands later is undone by the LATE CLAMP check in the loop
+        last_change=$SECONDS
     fi
 }
-cleanup() { trap - EXIT; release "daemon exiting"; }
+cleanup() { trap - EXIT; APPLY_WAIT_S=20; HOLD_S=5; release "daemon exiting"; }   # systemd waits 90 s for a stop; ExecStopPost --restore is the backstop
 trap 'exit 0' TERM INT
 trap cleanup EXIT
 
@@ -256,6 +302,11 @@ if is_clamped "$cur" && [ "$cur" != "$maxv" ]; then state=clamped; saved=""; rel
 
 while :; do
     cap=$(num "$(rd "$B/capacity")"); on=$(num "$(rd "$U/online")"); st=$(rd "$B/status"); cur_i=$(abs "$(rd "$B/current_now")")
+    lim_now=$(num "$(rd "$LIM")")
+    if [ "$state" = released ] && is_clamped "$lim_now" && [ "$lim_now" != "$maxv" ]; then
+        log warning "LATE CLAMP: the limit reads $lim_now but this daemon holds no clamp (a write from an earlier test or run that took effect late); writing $maxv back. $(snap)"
+        node_write "$maxv" || log err "could not write $maxv to $LIM"
+    fi
     if marker_ok; then now_armed=1; else now_armed=0; fi
     if [ "$now_armed" != "$armed" ]; then
         if [ "$now_armed" = 1 ]; then log info "ARMED: verified on this kernel ($(tr '\n' ' ' < "$MARKER"))"; else log warning "MONITOR-ONLY: $MARKER_WHY"; fi
