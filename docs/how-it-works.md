@@ -41,6 +41,9 @@ A write to the limit node does not show up at once, and does not act at once. On
 - a restore counts only after the node has kept showing the released value for `HOLD_S` (20 s), and is written again if a clamp lands after it;
 - the daemon records a clamp before writing it, so a stop signal in between still releases it, and undoes a clamp it did not make.
 
+## Monitoring
+Besides the heartbeat, the daemon logs `NOT CHARGING with the limit released` (at most every 10 minutes) when nothing is clamped, a charger is attached, the battery is below the 77 % release point and the status is not `Charging` for five polls in a row. After a clamp held for about 90 s at 80 % and then released, the Thor stayed in `Not charging` for more than ten minutes ([evidence](evidence.md)); this warning is how that shows up if it happens below the cap, where it matters.
+
 ## The value it puts back
 The firmware changes the limit by itself (observed `9000000` at 73 % charge and `4680000` at 96 % on the surveyed Thor). Gleipnir remembers the value it found before clamping and restores exactly that. If that cannot be written it falls back to the node's `_max`.
 

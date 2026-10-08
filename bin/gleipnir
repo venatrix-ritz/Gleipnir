@@ -266,6 +266,7 @@ for _ in $(seq 1 "${GLEIPNIR_WAIT_S:-30}"); do
 done
 
 state=released; saved=""; clamped_at=0; last_change=-$MIN_HOLD_S; bad=0; armed=-1; last_beat=0
+idle_polls=0; last_idle_warn=-600
 
 release() {   # release WHY ; safe direction, never rate-limited
     [ "$state" = clamped ] || return 0
@@ -302,6 +303,17 @@ if is_clamped "$cur" && [ "$cur" != "$maxv" ]; then state=clamped; saved=""; rel
 
 while :; do
     cap=$(num "$(rd "$B/capacity")"); on=$(num "$(rd "$U/online")"); st=$(rd "$B/status"); cur_i=$(abs "$(rd "$B/current_now")")
+    # Monitoring: nothing is clamped, a charger is attached and the battery is clearly below the cap, yet it is not charging.
+    # Seen on the Thor on 2026-10-08: after a clamp held for about 90 s at 80 % was released, the status stayed 'Not charging'.
+    if [ "$state" = released ] && [ "$on" = 1 ] && [ "$cap" -lt "$RELEASE_AT" ] && [ "$st" != Charging ]; then
+        idle_polls=$((idle_polls + 1))
+        if [ "$idle_polls" -ge 5 ] && [ $((SECONDS - last_idle_warn)) -ge 600 ]; then
+            log warning "NOT CHARGING with the limit released: ${cap}% (below the ${RELEASE_AT}% release point), charger online, status '$st'. Unplugging and replugging the charger may be needed. $(snap)"
+            last_idle_warn=$SECONDS
+        fi
+    else
+        idle_polls=0
+    fi
     lim_now=$(num "$(rd "$LIM")")
     if [ "$state" = released ] && is_clamped "$lim_now" && [ "$lim_now" != "$maxv" ]; then
         log warning "LATE CLAMP: the limit reads $lim_now but this daemon holds no clamp (a write from an earlier test or run that took effect late); writing $maxv back. $(snap)"

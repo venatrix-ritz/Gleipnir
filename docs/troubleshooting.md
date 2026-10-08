@@ -11,6 +11,7 @@ First look: `gleipnir --status` (no root needed) and `journalctl -t gleipnir -n 
 | Test refuses: "charging current is only N uA" | not enough current to compare against | idle the Thor, retry at a lower level |
 | Test refuses: "gleipnir.service is running" | it could clamp during the test | `sudo systemctl stop gleipnir` (the panel does this itself) |
 | Test says FAIL | charging did not stop, or did not resume | the firmware ignores this control on your Thor or kernel; Gleipnir stays watch-only and changes nothing. Please share the saved log (`/var/lib/gleipnir/test-*.log`) in an issue |
+| Journal says `NOT CHARGING with the limit released` | the limit is released but the battery is not charging although a charger is attached and the level is below 77 % (seen once on the Thor after a clamp was held and released at 80 %; cause not established) | unplug and replug the charger; if it keeps happening, `sudo gleipnir --restore`, stop the daemon and report the journal (`journalctl -t gleipnir`) |
 | Test says ABORTED | the charger was unplugged, the battery reached 45 °C, or the level dropped | the limit was restored; retry when conditions are stable |
 | `systemctl status gleipnir` shows failed, exit 78 | no usable node, three failed writes, or the watchdog found the limit ineffective | read the journal; the limit was released before exit; re-test before restarting |
 | Thor will not charge | a leftover clamp | see the recovery command in [safety.md](safety.md); then `sudo systemctl restart gleipnir` |
