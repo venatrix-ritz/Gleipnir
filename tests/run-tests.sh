@@ -203,6 +203,12 @@ export GLEIPNIR_NO_SYSLOG=1; TMPOUT=$(mktemp)
 ) > "$TMPOUT" 2>&1
 cat "$TMPOUT"; PASS=$((PASS + $(grep -c "^  ok " "$TMPOUT"))); FAIL=$((FAIL + $(grep -c "^  FAIL " "$TMPOUT")))
 
+echo "S18 monitoring: a released limit, a charger and a low battery that is not charging is logged; the 77-80 % band is not"
+new_world 70 "Not charging" 1 9000000; daemon_start; sleep 8
+has "warns when not charging well below the cap" "$LOG" "NOT CHARGING with the limit released"; daemon_stop
+new_world 78 "Not charging" 1 9000000; daemon_start; sleep 8
+if grep -q "NOT CHARGING" "$LOG" 2>/dev/null; then bad "no warning inside the 77-80 % band" "warned"; else ok "no warning inside the 77-80 % band"; fi; daemon_stop
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]
