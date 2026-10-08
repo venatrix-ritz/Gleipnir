@@ -1,0 +1,45 @@
+# How Gleipnir works
+
+## The idea
+Holding a lithium battery near 80 % instead of 100 % while it sits on a charger slows its wear. Linux has a standard control for this, `charge_control_end_threshold`, but the Thor's firmware ignores it. Gleipnir uses the other control the Thor's kernel offers: the battery manager's **charge current limit**, exposed on Armada's kernel as `constant_charge_current` (and on one community fork as `charge_control_limit`). Armada's patch says writing `0` stops battery charging while the charger keeps powering the system. [See [evidence.md](evidence.md).]
+
+So: when the Thor is plugged in and at 80 % or more, Gleipnir sets the limit to the "stop charging" value; when you unplug it, or the level falls to 77 %, it puts the limit back to what it found.
+
+**Nobody has shown that the Thor's firmware obeys this.** Gleipnir therefore does nothing until its own measured test passes on your Thor and kernel ([testing.md](testing.md)).
+
+## Parts
+| Part | What it does |
+|---|---|
+| `bin/gleipnir` | one bash script: the daemon, `--status`, the safety `--test`, `--restore` |
+| `systemd/gleipnir.service` | runs the daemon as root; restarts on failure but never after exit `78`; runs `--restore` after any stop |
+| `main.py` + `dist/index.js` | the Decky plugin (flag `root`): installs and starts the daemon, runs the test, shows status and the log |
+
+## Which node
+| Node | Clamp value | Where it exists |
+|---|---|---|
+| `charge_control_limit` | `1000` (µA) | MgeeeeK's patched `qcom_battmgr` |
+| `constant_charge_current` | `0` | Armada's kernel (patch `0903`), including the surveyed Thor |
+
+Neither present: the daemon exits `78` and the status says so.
+
+## The daemon's loop (every 30 s)
+```
+read capacity, USB-online, status, current
+is the verification marker valid for this node, value and kernel?
+  no  -> MONITOR-ONLY: log, never write; if a clamp is found left over, undo it
+  yes -> state "released":  plugged in, capacity >= 80 %, and >= 120 s since the last change  -> CLAMP
+         state "clamped":   unplugged -> RELEASE;   capacity <= 77 % -> RELEASE;
+                            after 120 s clamped: still "Charging" above 200 mA for 3 polls in a row
+                                                 -> WATCHDOG: RELEASE, delete the marker, exit 78
+heartbeat every 600 s; three failed writes in a row -> release and exit 78
+```
+Thresholds are constants at the top of `bin/gleipnir`: target 80, release at 77, 120 s settle, 120 s minimum between clamps, 200 mA watchdog, 3 strikes.
+
+## The value it puts back
+The firmware changes the limit by itself (observed `9000000` at 73 % charge and `4680000` at 96 % on the surveyed Thor). Gleipnir remembers the value it found before clamping and restores exactly that. If that cannot be written it falls back to the node's `_max`.
+
+## The verification marker
+`/var/lib/gleipnir/verified` holds `node=`, `value=`, `kernel=`, `verified_at=`, `baseline_uA=`. The daemon re-reads it every poll. It only counts if the node path, the clamp value and `uname -r` all match the running system, so a kernel update or a different node disarms Gleipnir until you test again. The watchdog deletes it if the limit ever proves ineffective.
+
+## Logging
+Everything goes to the journal under the tag `gleipnir` (`journalctl -t gleipnir`): start-up, arming and disarming, every CLAMP and RELEASE with a one-line battery snapshot (`cap=… status=… usb=… current=… voltage=… temp=… health=… limit=…`), every failed write, the watchdog, and a heartbeat. Test runs are also saved in `/var/lib/gleipnir/test-<time>.log`.
