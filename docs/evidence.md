@@ -14,12 +14,14 @@ Claim tags: **[observed]** read from a real Thor by a read-only command on the s
 - **[src]** Valve's `steamos-manager` implements "max charge level" through `charge_control_end_threshold` (ACPI SB) or a hwmon attribute (`steamos-manager/src/power.rs`). That is the standard method; it is proven on devices whose firmware honours it, not on the Thor.
 - **[src]** MgeeeeK's fork (MgeeeeK/thor-armada, commits `a70010a` and `7e17352`) ships a `thor-charge-limit` script that clamps a `charge_control_limit` node to 1000 µA at 80 % and releases at 77 %. Gleipnir keeps that idea and the thresholds.
 - **[src]** Armada issue 363, "Battery charge limit to 80%", was open on 2026-10-07 with Thor owners asking for the feature. Armada does not ship a limiter.
+- **[observed 2026-10-08]** Field run on the fixed build (daemon armed at 09:53 after a passing `--test --run`: baseline 4.29 A, limit took effect, charging resumed, node released). On a 250 W PD charger (8.5 V, 2.8 A input): clamp at 80 % at 09:57:34 (limit `9000000` to `6000000` to `3000000` to `0` in about 3 s, current 4.4 A to 0). The clamp held through 18 minutes of The Ascent and a 3 s charger swap (heartbeats at 10:03 and 10:13, `state=clamped`). Playing on a weaker charger (about 1.4 A at 4.4 V) drained the battery; Gleipnir logged `RELEASE (battery down to 77%)` at 10:27:28 with the charger attached; back on the strong charger the current was +2.5 A at 78 %, and it re-clamped at 80 % at 10:33:01. Source: Thor journal (`journalctl -t gleipnir`) and the 1 s battery log.
+- **[observed 2026-10-08]** `status` reads `Charging` at 0 A while clamped, and also while the game drains the battery. `current_now` is positive when charging and negative when discharging; only its sign and size are reliable. This produced a false watchdog trip at 09:28 on the first build (it read the size as charging); fixed in the same day's release.
 
 ## What follows, and what does not
 - The AYN Android feature shows the firmware **can** stop charging at 80 % and run the Thor from the charger. It does not show that Armada's `constant_charge_current` write reaches the same behaviour.
 - The patch comment says `0` gives bypass charging; the Armada authors presumably tested it on a device **[unverified: no test result is published in the repository]**.
 - Whether the value survives a reboot, and whether the charger supplies the whole system load while clamped, are **[unverified]**.
-- So the claim "Gleipnir stops charging at 80 %" is a hypothesis until `gleipnir --test --run` passes on your Thor. The test measures charging stop and charging resume; it does not measure the supply path.
+- The claim "Gleipnir stops charging at 80 %" was a hypothesis until `gleipnir --test --run` passes on your Thor. The test measures charging stop and charging resume; it does not measure the supply path.
 
 ## Open questions
 1. Does a clamp of `0` behave differently from a small non-zero value on this firmware?
