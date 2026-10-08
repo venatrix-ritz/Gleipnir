@@ -4,13 +4,14 @@ Gleipnir writes to a hardware control on a battery, so it is built to fail safe.
 
 ## The rules it follows
 1. **Watch-only until verified** by a measured test on the running kernel ([testing.md](testing.md)).
-2. **Restore on every exit:** `SIGTERM`, `SIGINT`, normal exit and errors trigger a release; the unit's `ExecStopPost` runs `gleipnir --restore` for crashes and `SIGKILL`; a leftover clamp found at start-up is undone first.
+2. **Restore on every exit, and it has to stick:** a restore is only done when the node has kept showing the released value for a while; the node can be slow, so a clamp that lands after the restore is written again. While running, the daemon also undoes a clamp it did not make ("LATE CLAMP") within one poll.
+   Exits covered: `SIGTERM`, `SIGINT`, normal exit and errors trigger a release; the unit's `ExecStopPost` runs `gleipnir --restore` for crashes and `SIGKILL`; a leftover clamp found at start-up is undone first.
 3. **Put back what it found,** not a guessed maximum.
 4. **Read back every write;** three failures in a row release and stop the daemon (exit `78`).
 5. **Watchdog** for a limit that does nothing.
 6. **No flapping:** at most one clamp every 120 s; releases are never delayed.
 7. **Everything is logged,** and `--status` reports without touching anything.
-8. **The test is reversible and bounded:** about 40 s, it restores on any exit, and it aborts if the charger is unplugged, the battery reaches 45 °C, or the level drops 2 points.
+8. **The test is reversible and bounded:** at most about five minutes, it restores on any exit and holds the restore until it has stayed put, and it aborts if the charger is unplugged, the battery reaches 45 °C, or the level drops 2 points.
 
 ## Failure modes
 | What goes wrong | What happens |
