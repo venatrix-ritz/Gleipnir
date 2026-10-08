@@ -28,11 +28,17 @@ new_world() {  # new_world CAP STATUS USB LIMIT
     export GLEIPNIR_NO_SYSLOG=1 GLEIPNIR_PS_BASE=$PS GLEIPNIR_STATE_DIR=$T/state GLEIPNIR_LOG_FILE=$LOG GLEIPNIR_KERNEL=test-1 GLEIPNIR_ALLOW_NONROOT=1
     export GLEIPNIR_POLL_S=1 GLEIPNIR_SETTLE_S=2 GLEIPNIR_MIN_HOLD_S=0 GLEIPNIR_HEARTBEAT_S=2 GLEIPNIR_WAIT_S=1
     export GLEIPNIR_CLAMP_S=6 GLEIPNIR_BASE_S=2 GLEIPNIR_AFTER_S=4 GLEIPNIR_SAMPLE_S=1
+    export GLEIPNIR_APPLY_WAIT_S=6 GLEIPNIR_HOLD_S=1 GLEIPNIR_WAIT_STEP_DS=2
 }
-sim_start() {  # sim_start effective|ineffective
-    ( while sleep 0.15; do
+sim_start() {  # sim_start effective|ineffective|late [LAG_S] : 'late' reacts to a change of the limit only after LAG_S seconds
+    local lag=${2:-0}
+    ( last=""; changed=$SECONDS; prev=$(cat "$PS/battery/constant_charge_current")
+      while sleep 0.15; do
           v=$(cat "$PS/battery/constant_charge_current")
-          if [ "$1" = effective ] && [ "$v" -le 1000 ]; then echo "Not charging" > "$PS/battery/status"; echo 0 > "$PS/battery/current_now"
+          [ "$v" != "$last" ] && { last=$v; changed=$SECONDS; }
+          seen=$v; [ "$1" = late ] && [ $((SECONDS - changed)) -lt "$lag" ] && seen=${prev:-$v}
+          [ $((SECONDS - changed)) -ge "$lag" ] && prev=$v
+          if [ "$1" != ineffective ] && [ "$seen" -le 1000 ]; then echo "Not charging" > "$PS/battery/status"; echo 0 > "$PS/battery/current_now"
           elif [ -r "$PS/battery/status" ] && [ "$(cat "$PS/usb_gone" 2>/dev/null)" != 1 ]; then echo Charging > "$PS/battery/status"; echo 1500000 > "$PS/battery/current_now"; fi
       done ) &
     SIM=$!; PIDS+=("$SIM")
@@ -135,6 +141,73 @@ echo "S13 no usable node"
 new_world 85 Charging 1 9000000; rm "$PS/battery/constant_charge_current"
 bash "$SCRIPT" > /dev/null 2>&1; eq "daemon exits 78" "$?" 78
 bash "$SCRIPT" --status > /dev/null 2>&1; eq "--status exits 3" "$?" 3
+
+echo "S14 test mode PASS when the limit takes effect late (the Thor took about a minute)"
+new_world 60 Charging 1 4680000; export GLEIPNIR_CLAMP_S=14 GLEIPNIR_AFTER_S=14; sim_start late 3
+bash "$SCRIPT" --test --run > "$T/out" 2>&1; rc=$?; eq "exit 0" "$rc" 0
+eq "limit back to the value found" "$(limit)" 4680000
+has "waited for charging to resume" "$T/out" "waiting for charging to resume"
+has "result says PASS" "$T/out" "^PASS"; sim_stop
+
+echo "S15 test mode: an effect that arrives after the wait is a FAIL, and the limit is still put back and held"
+new_world 60 Charging 1 4680000; export GLEIPNIR_CLAMP_S=4 GLEIPNIR_AFTER_S=4; sim_start late 30
+bash "$SCRIPT" --test --run > "$T/out" 2>&1; rc=$?; eq "exit 5" "$rc" 5
+eq "limit restored" "$(limit)" 4680000; sleep 2; eq "and still restored 2 s later" "$(limit)" 4680000
+eq "no marker" "$([ -e "$T/state/verified" ] && echo present || echo gone)" gone; sim_stop
+
+echo "S16 a clamp that lands late with no clamp of ours is undone (the stuck state seen on 2026-10-08)"
+new_world 70 Charging 1 9000000; sim_start effective; daemon_start; sleep 2
+echo 0 > "$PS/battery/constant_charge_current"          # something else's write takes effect now
+wait_limit 9000000 6; eq "daemon puts the maximum back" "$(limit)" 9000000
+has "logs it" "$LOG" "LATE CLAMP"; daemon_stop; sim_stop
+
+echo "S17 the settle logic against a node that shows writes late and drops writes while one is pending"
+export GLEIPNIR_NO_SYSLOG=1; TMPOUT=$(mktemp)
+( set +u
+  T=$(mktemp -d); NODE=$T/node; LIM=$NODE; CLAMP_DETECT=1000; FAILS=0
+  num() { case "${1:-}" in ''|*[!0-9-]*) echo 0 ;; *) echo "$1" ;; esac; }
+  log() { :; }
+  is_clamped() { [ "$(num "${1:-}")" -le "$CLAMP_DETECT" ]; }
+  source <(sed -n '/^# --- begin settle/,/^# --- end settle/p' "$SCRIPT")
+  now_ms() { date +%s%3N; }
+  model_tick() {
+      [ -s "$NODE.queue" ] || return 0
+      local now at v; now=$(now_ms); : > "$NODE.keep"
+      while read -r at v; do if [ "$now" -ge "$at" ]; then echo "$v" > "$NODE.applied"; else echo "$at $v" >> "$NODE.keep"; fi; done < "$NODE.queue"
+      mv "$NODE.keep" "$NODE.queue"
+  }
+  rd() { model_tick; cat "$NODE.applied"; }
+  node_write() { model_tick; if [ "$MODEL_DROP" = 1 ] && [ -s "$NODE.queue" ]; then return 0; fi; echo "$(( $(now_ms) + MODEL_LAG_MS )) $1" >> "$NODE.queue"; }
+  world() { echo "$3" > "$NODE.applied"; : > "$NODE.queue"; MODEL_LAG_MS=$1; MODEL_DROP=$2; FAILS=0; }
+  WAIT_STEP_DS=2
+
+  APPLY_WAIT_S=4; HOLD_S=1
+  world 1000 0 9000000; t0=$(now_ms); write_limit 0 exact; rc=$?; took=$(( $(now_ms) - t0 ))
+  [ "$rc" = 0 ] && [ "$took" -ge 900 ] && [ "$took" -lt 3500 ] && echo "  ok   a write that shows after 1 s is accepted, not called refused (took ${took} ms)" || echo "  FAIL late write accepted :: rc=$rc took=$took"
+
+  APPLY_WAIT_S=1
+  world 8000 0 9000000; write_limit 0 exact; rc=$?
+  [ "$rc" = 1 ] && [ "$FAILS" = 1 ] && echo "  ok   a write that never shows within the wait is a counted failure" || echo "  FAIL counted failure :: rc=$rc fails=$FAILS"
+
+  # the 2026-10-08 failure: the clamp lands after the restore was written; the restore must notice and write again
+  APPLY_WAIT_S=3; HOLD_S=3
+  world 2000 1 9000000; node_write 0                       # the clamp is on its way (lands in 2 s)
+  ensure_released 9000000; rc=$?
+  sleep 3; final=$(rd "$LIM")
+  [ "$rc" = 0 ] && [ "$final" = 9000000 ] && echo "  ok   a restore written while a clamp is in flight ends released and stays released" || echo "  FAIL restore vs late clamp :: rc=$rc final=$final"
+
+  APPLY_WAIT_S=1; HOLD_S=1; t0=$(now_ms)
+  world 999999 0 0; ensure_released 9000000; rc=$?; took=$(( $(now_ms) - t0 ))
+  [ "$rc" = 1 ] && [ "$took" -lt 12000 ] && echo "  ok   a node that ignores writes makes the restore fail after bounded time (${took} ms), not hang" || echo "  FAIL bounded failure :: rc=$rc took=$took"
+  rm -rf "$T"
+) > "$TMPOUT" 2>&1
+cat "$TMPOUT"; PASS=$((PASS + $(grep -c "^  ok " "$TMPOUT"))); FAIL=$((FAIL + $(grep -c "^  FAIL " "$TMPOUT")))
+
+echo "S18 monitoring: a released limit, a charger and a low battery that is not charging is logged; the 77-80 % band is not"
+new_world 70 "Not charging" 1 9000000; daemon_start; sleep 8
+has "warns when not charging well below the cap" "$LOG" "NOT CHARGING with the limit released"; daemon_stop
+new_world 78 "Not charging" 1 9000000; daemon_start; sleep 8
+if grep -q "NOT CHARGING" "$LOG" 2>/dev/null; then bad "no warning inside the 77-80 % band" "warned"; else ok "no warning inside the 77-80 % band"; fi; daemon_stop
 
 echo
 echo "passed $PASS, failed $FAIL"
