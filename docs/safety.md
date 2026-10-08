@@ -40,4 +40,4 @@ echo 9000000 | sudo tee /sys/class/power_supply/battery/constant_charge_current
 ## Security
 - The daemon and the plugin backend run as **root**. The daemon takes no network input; its only inputs are sysfs files and its own root-owned marker. `GLEIPNIR_*` environment variables exist only for tests and have no effect on the systemd unit unless someone adds them.
 - The plugin backend runs fixed commands (no shell) and has no path or command taken from the panel, except a line count for the log (clamped to 1-200).
-- To report a vulnerability, use GitHub's private security advisory form on the repository rather than a public issue.
+- To report a vulnerability, open an issue that says only that you have a security report (no exploit details) and ask for a private way to send it.
