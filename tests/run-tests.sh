@@ -86,6 +86,14 @@ eq "limit restored" "$(limit)" 9000000
 eq "marker deleted" "$([ -e "$T/state/verified" ] && echo present || echo gone)" gone
 has "logs the watchdog" "$LOG" "WATCHDOG"; sim_stop
 
+echo "S5b discharging under load while the status says Charging must not trip the watchdog"
+new_world 90 Charging 1 9000000; marker; sim_start effective; daemon_start; wait_limit 0 6
+sim_stop; echo Charging > "$PS/battery/status"; echo -1500000 > "$PS/battery/current_now"; sleep 8
+eq "daemon still running" "$(kill -0 "$D" 2>/dev/null && echo yes || echo no)" yes
+eq "clamp still held" "$(limit)" 0
+eq "marker kept" "$([ -e "$T/state/verified" ] && echo present || echo gone)" present
+if grep -q WATCHDOG "$LOG" 2>/dev/null; then bad "no watchdog on discharge" "fired"; else ok "no watchdog on discharge"; fi; daemon_stop
+
 echo "S6 marker for another kernel disarms"
 new_world 90 Charging 1 9000000; marker some-other-kernel; sim_start effective; daemon_start; sleep 3
 eq "no clamp with a stale marker" "$(limit)" 9000000; has "explains" "$LOG" "re-run the test"; daemon_stop; sim_stop
