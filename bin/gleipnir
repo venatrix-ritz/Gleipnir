@@ -129,8 +129,11 @@ fi
 
 if [ "$mode" = status ] && [ "$json" = 1 ]; then
     if marker_ok; then v=true; why=""; else v=false; why=$(printf '%s' "$MARKER_WHY" | tr -d '"\\'); fi
-    printf '{"node":"%s","kind":"%s","clamp_value":%s,"node_max":%s,"verified":%s,"verified_why":"%s","kernel":"%s","capacity":%s,"status":"%s","usb_online":%s,"current_ua":%s,"voltage_uv":%s,"temp_dc":%s,"health":"%s","limit":%s}
-'         "$LIM" "$KIND" "$CLAMP_VAL" "$maxv" "$v" "$why" "$KERNEL" "$(num "$(rd "$B/capacity")")" "$(rd "$B/status")"         "$(num "$(rd "$U/online")")" "$(num "$(rd "$B/current_now")")" "$(num "$(rd "$B/voltage_now")")" "$(num "$(rd "$B/temp")")" "$(rd "$B/health")" "$(num "$(rd "$LIM")")"
+    fmt='{"node":"%s","kind":"%s","clamp_value":%s,"node_max":%s,"verified":%s,"verified_why":"%s","kernel":"%s",'
+    fmt+='"capacity":%s,"status":"%s","usb_online":%s,"current_ua":%s,"voltage_uv":%s,"temp_dc":%s,"health":"%s","limit":%s}\n'
+    printf "$fmt" "$LIM" "$KIND" "$CLAMP_VAL" "$maxv" "$v" "$why" "$KERNEL" \
+        "$(num "$(rd "$B/capacity")")" "$(rd "$B/status")" "$(num "$(rd "$U/online")")" "$(num "$(rd "$B/current_now")")" \
+        "$(num "$(rd "$B/voltage_now")")" "$(num "$(rd "$B/temp")")" "$(rd "$B/health")" "$(num "$(rd "$LIM")")"
     exit 0
 fi
 if [ "$mode" = status ]; then
@@ -150,8 +153,16 @@ if [ "$mode" = test ]; then
     if [ "$run" != 1 ]; then echo "Plan only; nothing was written. Add --run (as root, charger plugged in, battery 10-90 %)."; exit 0; fi
     if [ "$(id -u)" != 0 ] && [ "${GLEIPNIR_ALLOW_NONROOT:-0}" != 1 ]; then echo "Run as root: sudo $0 --test --run" >&2; exit 4; fi
     st=$(rd "$B/status"); cap0=$(num "$(rd "$B/capacity")"); usb=$(num "$(rd "$U/online")")
-    [ "$st" = Charging ] && [ "$usb" = 1 ] || { echo "Refusing: status is '$st' (usb online $usb). Plug the charger in and wait for 'Charging'." >&2; exit 4; }
+    if [ "$st" != Charging ] || [ "$usb" != 1 ]; then
+        echo "Refusing: status is '$st' (usb online $usb). Plug the charger in and wait for 'Charging'." >&2
+        echo "Supplies seen: $(for d in "$PS"/*; do printf '%s=%s ' "$(basename "$d")" "$(rd "$d/online")"; done)" >&2
+        exit 4
+    fi
     { [ "$cap0" -ge 10 ] && [ "$cap0" -le 90 ]; } || { echo "Refusing: battery is at ${cap0}%. Test between 10 and 90 % so charging is not tapering already." >&2; exit 4; }
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet gleipnir.service 2>/dev/null; then
+        echo "Refusing: gleipnir.service is running and could clamp during the test. Stop it first: sudo systemctl stop gleipnir (the Decky panel does this for you)." >&2
+        exit 4
+    fi
     mkdir -p "$STATE_DIR" 2>/dev/null
     TESTLOG="$STATE_DIR/test-$(date +%Y%m%d-%H%M%S).log"
     exec > >(tee -a "$TESTLOG") 2>&1
@@ -161,9 +172,10 @@ if [ "$mode" = test ]; then
     tlog() { log info "test: $*"; }
     sample() { printf '   %-8s %s\n' "$1" "$(snap)"; }
     avgcur() { local t=0 s=0 n=0 x; while [ "$t" -lt "$1" ]; do x=$(abs "$(rd "$B/current_now")"); s=$((s + x)); n=$((n + 1)); sample "$2"; sleep "$SAMPLE_S"; t=$((t + SAMPLE_S)); done; echo $((n > 0 ? s / n : 0)) > "$STATE_DIR/.avg"; }
-    restored=0
+    restored=0; touched=0
     restore_test() {
         [ "$restored" = 1 ] && return; restored=1
+        [ "$touched" = 1 ] || return 0      # never wrote the clamp, nothing to put back
         if write_limit "$orig" released || write_limit "$maxv" released; then
             echo "==> Restored the limit: node reads $(rd "$LIM") (found $orig)"; tlog "restored limit, node reads $(rd "$LIM")"
         else
@@ -175,6 +187,7 @@ if [ "$mode" = test ]; then
     echo "-- baseline"; avgcur "$BASE_S" before; base=$(cat "$STATE_DIR/.avg")
     if [ "$base" -lt 300000 ]; then echo "Refusing: charging current is only ${base} uA, too low for a meaningful test. Retry with the Thor idle and the battery lower." >&2; exit 4; fi
     echo "-- clamp: writing $CLAMP_VAL"; tlog "clamping to $CLAMP_VAL (baseline ${base}uA)"
+    touched=1
     write_limit "$CLAMP_VAL" exact || { echo "FAIL: the kernel refused the write." >&2; rm -f "$MARKER"; exit 5; }
     sleep 1
     effective=0; abort=""; eff_streak=0; t=0
@@ -198,7 +211,7 @@ if [ "$mode" = test ]; then
     if [ "$effective" = 1 ] && [ "$resumed" = 1 ] && [ "$released_ok" = 1 ]; then
         printf 'node=%s\nvalue=%s\nkernel=%s\nverified_at=%s\nbaseline_uA=%s\n' "$LIM" "$CLAMP_VAL" "$KERNEL" "$(date -Is)" "$base" > "$MARKER"
         tlog "PASS; marker written for $LIM value $CLAMP_VAL kernel $KERNEL"
-        echo "PASS. Marker written: $MARKER"; echo "Arm the daemon with: sudo systemctl restart gleipnir   (or --battery installs it)"
+        echo "PASS. Marker written: $MARKER"; echo "The daemon arms itself within one poll (30 s) if it is running; otherwise: sudo systemctl enable --now gleipnir"
         exit 0
     fi
     rm -f "$MARKER"; tlog "FAIL; no marker"

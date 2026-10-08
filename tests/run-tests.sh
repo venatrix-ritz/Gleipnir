@@ -111,6 +111,7 @@ has "result says FAIL" "$T/out" "^FAIL"; sim_stop
 echo "S10 test mode refuses when not charging, too full, or already clamped"
 new_world 60 Discharging 0 9000000
 bash "$SCRIPT" --test --run > "$T/out" 2>&1; eq "refuses unplugged (exit 4)" "$?" 4; eq "wrote nothing" "$(limit)" 9000000
+has "lists the supplies it saw" "$T/out" "Supplies seen"
 new_world 95 Charging 1 9000000
 bash "$SCRIPT" --test --run > "$T/out" 2>&1; eq "refuses at 95 % (exit 4)" "$?" 4
 new_world 60 Charging 1 0
