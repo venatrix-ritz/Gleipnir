@@ -1,0 +1,278 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later (derived from Armada scripts; see LICENSES/GPL-2.0.txt)
+# Adapted from MgeeeeK/thor-armada (Mragank Shekhar), system_files/usr/libexec/armada/thor-charge-limit,
+# commits a70010a + 7e17352. Kept: the 80 %/77 % hysteresis idea and the clamp-through-the-current-limit approach.
+# Rewritten here for safety: see "Safety design" below. The fork ships Armada's LICENSE.md (GPL-2.0-or-later).
+#
+# Gleipnir: the 80 % battery ceiling for the AYN Thor (a Decky plugin; this is its root daemon).
+#
+# How it limits charging: the Thor's firmware ignores the standard charge_control_end_threshold (observed: it reads
+# back 0). Armada's kernel patch 0903 instead exposes the battery manager's charge current limit as
+# constant_charge_current; its commit message says writing 0 stops battery charging while the charger keeps powering
+# the system. AYN's own Android "Stop at 80 %" writes a different node (/sys/class/qcom-battery/limit_capacity_charge,
+# Android kernel only; it does not exist on Armada). So this is NOT a method known to work on the Thor: the daemon
+# will not touch charging until the test below has proved it on this very kernel.
+#
+# Safety design:
+#   1. Monitor-only until verified. Without a valid marker the daemon only logs. The marker is written by
+#      `gleipnir --test --run` after a measured pass (charging stops while clamped AND resumes after release),
+#      and is bound to the node, the clamp value and the running kernel, so a kernel update disarms it.
+#   2. Restores on every exit path (TERM, INT, EXIT, error); the unit's ExecStopPost runs --restore for SIGKILL/crash.
+#      A leftover clamp found at start is undone first, whether or not the daemon is armed.
+#   3. Puts back exactly the value it found (the firmware changes it itself: 9000000 at 73 %, 4680000 at 96 %).
+#   4. Every write is read back. Three failures in a row: release, log an error, exit 78.
+#   5. Watchdog: if charging continues at more than 200 mA two minutes into a clamp, the limit has no effect: it
+#      releases, deletes the marker and exits 78 so the failure is visible in `systemctl status`.
+#   6. Releases when unplugged, at or below 77 %, or when the verification stops being valid; clamps at most once
+#      every GLEIPNIR_MIN_HOLD_S (120 s) so it cannot flap.
+#   7. Logs every decision to the journal (`journalctl -t gleipnir`) with a full battery snapshot, plus a
+#      heartbeat every 10 minutes.
+#
+# Usage:  gleipnir                 run the daemon (what the systemd unit does)
+#         gleipnir --status [--json]   read-only report
+#         gleipnir --test          show the test plan (nothing is written)
+#         gleipnir --test --run    the supervised test; needs root, charger plugged in, battery 10-90 %
+#         gleipnir --restore       undo a leftover clamp (used by the unit's ExecStopPost)
+# Exit codes: 0 clean, 3 no limit node, 4 test preconditions not met, 5 test failed, 78 unsupported/ineffective.
+set -uo pipefail
+export LC_ALL=C
+
+PS="${GLEIPNIR_PS_BASE:-/sys/class/power_supply}"
+B="$PS/battery"
+U="$PS/qcom-battmgr-usb"
+STATE_DIR="${GLEIPNIR_STATE_DIR:-/var/lib/gleipnir}"
+MARKER="$STATE_DIR/verified"
+KERNEL="${GLEIPNIR_KERNEL:-$(uname -r)}"
+TARGET=80
+RELEASE_AT=77
+CLAMP_DETECT=1000                    # a limit at or below this is ours (the firmware never reports this little)
+POLL_S="${GLEIPNIR_POLL_S:-30}"
+SETTLE_S="${GLEIPNIR_SETTLE_S:-120}"
+MIN_HOLD_S="${GLEIPNIR_MIN_HOLD_S:-120}"
+HEARTBEAT_S="${GLEIPNIR_HEARTBEAT_S:-600}"
+WATCH_UA=200000                      # charging above this while clamped means the clamp is not working
+BAD_LIMIT=3
+
+# --- helpers ---------------------------------------------------------------------------------------------------
+rd()  { cat "$1" 2>/dev/null || echo "?"; }
+num() { case "${1:-}" in ''|*[!0-9-]*) echo 0 ;; *) echo "$1" ;; esac; }
+abs() { local v; v=$(num "${1:-0}"); echo "${v#-}"; }
+log() {
+    local lvl=$1; shift
+    if [ -n "${GLEIPNIR_NO_SYSLOG:-}" ]; then echo "gleipnir[$lvl]: $*" >&2   # tests: keep fake events out of the real journal
+    else logger -t gleipnir -p "daemon.$lvl" -- "$*" 2>/dev/null || echo "gleipnir[$lvl]: $*" >&2; fi
+    if [ -n "${GLEIPNIR_LOG_FILE:-}" ]; then echo "[$lvl] $*" >> "$GLEIPNIR_LOG_FILE"; fi
+    return 0
+}
+snap() {
+    printf 'cap=%s%% status=%s usb=%s current=%suA voltage=%suV temp=%s health=%s limit=%s' \
+        "$(rd "$B/capacity")" "$(rd "$B/status")" "$(rd "$U/online")" "$(rd "$B/current_now")" \
+        "$(rd "$B/voltage_now")" "$(rd "$B/temp")" "$(rd "$B/health")" "$(rd "$LIM")"
+}
+
+# --- which limit node does this kernel have --------------------------------------------------------------------
+LIM=""; MAX=""; CLAMP_VAL=""; KIND=""
+if [ -e "$B/charge_control_limit" ]; then            # MgeeeeK's patched qcom_battmgr
+    LIM="$B/charge_control_limit"; MAX="$B/charge_control_limit_max"; CLAMP_VAL=1000; KIND="fork charge_control_limit"
+elif [ -e "$B/constant_charge_current" ]; then       # stock Armada, kernel patch 0903
+    LIM="$B/constant_charge_current"; MAX="$B/constant_charge_current_max"; CLAMP_VAL=0; KIND="Armada constant_charge_current"
+fi
+maxv=$(num "$(rd "$MAX")"); [ "$maxv" -gt "$CLAMP_DETECT" ] || maxv=9000000
+is_clamped() { [ "$(num "${1:-}")" -le "$CLAMP_DETECT" ]; }
+
+FAILS=0
+# write_limit VALUE exact|released : write, read back, count failures. "released" accepts any readback above
+# CLAMP_DETECT because the firmware may adjust its own value right after.
+write_limit() {
+    local v=$1 mode=$2 rb ok=0
+    echo "$v" > "$LIM" 2>/dev/null
+    rb=$(rd "$LIM")
+    if [ "$mode" = exact ]; then [ "$rb" = "$v" ] && ok=1; else [ "$(num "$rb")" -gt "$CLAMP_DETECT" ] && ok=1; fi
+    if [ "$ok" = 1 ]; then FAILS=0; return 0; fi
+    FAILS=$((FAILS + 1)); log err "write of $v to $LIM did not stick (readback '$rb'; failure $FAILS in a row)"
+    return 1
+}
+
+marker_ok() {   # sets MARKER_WHY
+    MARKER_WHY=""
+    [ -r "$MARKER" ] || { MARKER_WHY="not verified: no marker at $MARKER (run: sudo gleipnir --test --run)"; return 1; }
+    local n v k
+    n=$(sed -n 's/^node=//p' "$MARKER" | head -1); v=$(sed -n 's/^value=//p' "$MARKER" | head -1); k=$(sed -n 's/^kernel=//p' "$MARKER" | head -1)
+    if [ "$n" != "$LIM" ] || [ "$v" != "$CLAMP_VAL" ] || [ "$k" != "$KERNEL" ]; then
+        MARKER_WHY="verification is for node '$n' value '$v' kernel '$k', this system is '$LIM' '$CLAMP_VAL' '$KERNEL'; re-run the test"
+        return 1
+    fi
+    return 0
+}
+
+# --- modes that need no daemon state ---------------------------------------------------------------------------
+mode=daemon; run=0; json=0
+for a in "$@"; do
+    case "$a" in
+        --status) mode=status ;; --test) mode=test ;; --restore) mode=restore ;; --run) run=1 ;; --json) json=1 ;;
+        *) echo "unknown option $a" >&2; exit 1 ;;
+    esac
+done
+if [ -z "$LIM" ]; then
+    echo "gleipnir: no charge_control_limit or constant_charge_current under $B; this kernel has no usable limit." >&2
+    log err "no usable charge limit node on kernel $KERNEL; exiting"
+    [ "$mode" = daemon ] && exit 78; exit 3
+fi
+
+if [ "$mode" = restore ]; then
+    cur=$(num "$(rd "$LIM")")
+    if is_clamped "$cur" && [ "$cur" != "$maxv" ]; then
+        echo "$maxv" > "$LIM" 2>/dev/null && log warning "--restore: found leftover clamp ($cur), restored $maxv" || log err "--restore could NOT restore $maxv to $LIM"
+    fi
+    exit 0
+fi
+
+if [ "$mode" = status ] && [ "$json" = 1 ]; then
+    if marker_ok; then v=true; why=""; else v=false; why=$(printf '%s' "$MARKER_WHY" | tr -d '"\\'); fi
+    printf '{"node":"%s","kind":"%s","clamp_value":%s,"node_max":%s,"verified":%s,"verified_why":"%s","kernel":"%s","capacity":%s,"status":"%s","usb_online":%s,"current_ua":%s,"voltage_uv":%s,"temp_dc":%s,"health":"%s","limit":%s}
+'         "$LIM" "$KIND" "$CLAMP_VAL" "$maxv" "$v" "$why" "$KERNEL" "$(num "$(rd "$B/capacity")")" "$(rd "$B/status")"         "$(num "$(rd "$U/online")")" "$(num "$(rd "$B/current_now")")" "$(num "$(rd "$B/voltage_now")")" "$(num "$(rd "$B/temp")")" "$(rd "$B/health")" "$(num "$(rd "$LIM")")"
+    exit 0
+fi
+if [ "$mode" = status ]; then
+    echo "node:      $LIM  ($KIND)"
+    echo "clamp:     writes $CLAMP_VAL; node maximum $maxv"
+    if marker_ok; then echo "verified:  yes ($(tr '\n' ' ' < "$MARKER"))"; else echo "verified:  NO - $MARKER_WHY"; fi
+    echo "battery:   $(snap)"
+    command -v journalctl >/dev/null 2>&1 && { echo "journal:"; journalctl -t gleipnir -n 5 --no-pager 2>/dev/null | sed 's/^/  /'; }
+    exit 0
+fi
+
+if [ "$mode" = test ]; then
+    CLAMP_S="${GLEIPNIR_CLAMP_S:-20}"; BASE_S="${GLEIPNIR_BASE_S:-6}"; AFTER_S="${GLEIPNIR_AFTER_S:-10}"; SAMPLE_S="${GLEIPNIR_SAMPLE_S:-2}"
+    echo "==> Limit node: $LIM ($KIND); found value: $(rd "$LIM"); would write: $CLAMP_VAL; kernel: $KERNEL"
+    echo "==> Plan: sample ${BASE_S}s, clamp for ${CLAMP_S}s, put the found value back, sample ${AFTER_S}s. PASS needs: charging stops (or falls under a quarter of the baseline) while clamped AND resumes after the release."
+    echo "==> Safety: the found value is restored on any exit; aborts and restores if the charger is unplugged, the battery passes 45 C, or the level drops 2 points."
+    if [ "$run" != 1 ]; then echo "Plan only; nothing was written. Add --run (as root, charger plugged in, battery 10-90 %)."; exit 0; fi
+    if [ "$(id -u)" != 0 ] && [ "${GLEIPNIR_ALLOW_NONROOT:-0}" != 1 ]; then echo "Run as root: sudo $0 --test --run" >&2; exit 4; fi
+    st=$(rd "$B/status"); cap0=$(num "$(rd "$B/capacity")"); usb=$(num "$(rd "$U/online")")
+    [ "$st" = Charging ] && [ "$usb" = 1 ] || { echo "Refusing: status is '$st' (usb online $usb). Plug the charger in and wait for 'Charging'." >&2; exit 4; }
+    { [ "$cap0" -ge 10 ] && [ "$cap0" -le 90 ]; } || { echo "Refusing: battery is at ${cap0}%. Test between 10 and 90 % so charging is not tapering already." >&2; exit 4; }
+    mkdir -p "$STATE_DIR" 2>/dev/null
+    TESTLOG="$STATE_DIR/test-$(date +%Y%m%d-%H%M%S).log"
+    exec > >(tee -a "$TESTLOG") 2>&1
+    echo "==> Logging this run to $TESTLOG and the journal"
+    orig=$(num "$(rd "$LIM")")
+    if is_clamped "$orig"; then echo "Refusing: the limit already reads $orig (clamped). Run --restore first." >&2; exit 4; fi
+    tlog() { log info "test: $*"; }
+    sample() { printf '   %-8s %s\n' "$1" "$(snap)"; }
+    avgcur() { local t=0 s=0 n=0 x; while [ "$t" -lt "$1" ]; do x=$(abs "$(rd "$B/current_now")"); s=$((s + x)); n=$((n + 1)); sample "$2"; sleep "$SAMPLE_S"; t=$((t + SAMPLE_S)); done; echo $((n > 0 ? s / n : 0)) > "$STATE_DIR/.avg"; }
+    restored=0
+    restore_test() {
+        [ "$restored" = 1 ] && return; restored=1
+        if write_limit "$orig" released || write_limit "$maxv" released; then
+            echo "==> Restored the limit: node reads $(rd "$LIM") (found $orig)"; tlog "restored limit, node reads $(rd "$LIM")"
+        else
+            echo "!!! COULD NOT RESTORE. Run: echo $maxv | sudo tee $LIM" >&2; log err "test could not restore the limit; run: echo $maxv | sudo tee $LIM"
+        fi
+    }
+    trap restore_test EXIT INT TERM
+    tlog "start $(snap)"
+    echo "-- baseline"; avgcur "$BASE_S" before; base=$(cat "$STATE_DIR/.avg")
+    if [ "$base" -lt 300000 ]; then echo "Refusing: charging current is only ${base} uA, too low for a meaningful test. Retry with the Thor idle and the battery lower." >&2; exit 4; fi
+    echo "-- clamp: writing $CLAMP_VAL"; tlog "clamping to $CLAMP_VAL (baseline ${base}uA)"
+    write_limit "$CLAMP_VAL" exact || { echo "FAIL: the kernel refused the write." >&2; rm -f "$MARKER"; exit 5; }
+    sleep 1
+    effective=0; abort=""; eff_streak=0; t=0
+    while [ "$t" -lt "$CLAMP_S" ]; do
+        sample clamped
+        st=$(rd "$B/status"); i=$(abs "$(rd "$B/current_now")"); cap=$(num "$(rd "$B/capacity")"); tmp=$(num "$(rd "$B/temp")"); usb=$(num "$(rd "$U/online")")
+        [ "$usb" = 1 ] || { abort="charger was unplugged"; break; }
+        [ "$tmp" -lt 450 ] || { abort="battery reached ${tmp} (0.1 C)"; break; }
+        [ "$cap" -gt $((cap0 - 2)) ] || { abort="battery level fell from $cap0 to $cap"; break; }
+        if [ "$st" != Charging ] || [ "$i" -lt $((base / 4)) ]; then eff_streak=$((eff_streak + 1)); else eff_streak=0; fi
+        [ "$eff_streak" -ge 3 ] && effective=1
+        sleep "$SAMPLE_S"; t=$((t + SAMPLE_S))
+    done
+    echo "-- restore"; restore_test
+    if [ -n "$abort" ]; then echo "ABORTED: $abort. Nothing was verified." >&2; tlog "aborted: $abort"; rm -f "$MARKER"; exit 5; fi
+    avgcur "$AFTER_S" after; resumed=0
+    st=$(rd "$B/status"); [ "$st" = Charging ] && [ "$(abs "$(rd "$B/current_now")")" -ge $((base / 4)) ] && resumed=1
+    back=$(num "$(rd "$LIM")"); released_ok=0; is_clamped "$back" || released_ok=1
+    echo; echo "================ RESULT ================"
+    echo "baseline ${base} uA | limit took effect: $([ "$effective" = 1 ] && echo yes || echo NO) | charging resumed after release: $([ "$resumed" = 1 ] && echo yes || echo NO) | node released: $([ "$released_ok" = 1 ] && echo yes || echo NO)"
+    if [ "$effective" = 1 ] && [ "$resumed" = 1 ] && [ "$released_ok" = 1 ]; then
+        printf 'node=%s\nvalue=%s\nkernel=%s\nverified_at=%s\nbaseline_uA=%s\n' "$LIM" "$CLAMP_VAL" "$KERNEL" "$(date -Is)" "$base" > "$MARKER"
+        tlog "PASS; marker written for $LIM value $CLAMP_VAL kernel $KERNEL"
+        echo "PASS. Marker written: $MARKER"; echo "Arm the daemon with: sudo systemctl restart gleipnir   (or --battery installs it)"
+        exit 0
+    fi
+    rm -f "$MARKER"; tlog "FAIL; no marker"
+    echo "FAIL. No marker written; the daemon stays monitor-only. Do NOT rely on this limit." >&2; exit 5
+fi
+
+# --- the daemon ------------------------------------------------------------------------------------------------
+for _ in $(seq 1 "${GLEIPNIR_WAIT_S:-30}"); do
+    [ -e "$B/capacity" ] && [ -e "$U/online" ] && break
+    sleep 1
+done
+
+state=released; saved=""; clamped_at=0; last_change=-$MIN_HOLD_S; bad=0; armed=-1; last_beat=0
+
+release() {   # release WHY ; safe direction, never rate-limited
+    [ "$state" = clamped ] || return 0
+    local target="${saved:-$maxv}"; is_clamped "$target" && target=$maxv
+    if write_limit "$target" released; then
+        log info "RELEASE ($1): restored $target; $(snap)"
+    elif write_limit "$maxv" released; then
+        log warning "RELEASE ($1): could not put $target back, restored the node maximum $maxv; $(snap)"
+    else
+        log err "COULD NOT RELEASE the limit ($1). Run: echo $maxv | sudo tee $LIM"; return 1
+    fi
+    state=released; saved=""; last_change=$SECONDS; return 0
+}
+clamp() {
+    local c; c=$(num "$(rd "$LIM")")
+    is_clamped "$c" || saved=$c
+    if write_limit "$CLAMP_VAL" exact; then
+        state=clamped; clamped_at=$SECONDS; last_change=$SECONDS; bad=0
+        log info "CLAMP at ${cap}%: limit ${saved:-unknown} -> $CLAMP_VAL; $(snap)"
+    fi
+}
+cleanup() { trap - EXIT; release "daemon exiting"; }
+trap 'exit 0' TERM INT
+trap cleanup EXIT
+
+log info "started: node $LIM ($KIND), clamp value $CLAMP_VAL, kernel $KERNEL, target ${TARGET}%"
+cur=$(num "$(rd "$LIM")")
+if is_clamped "$cur" && [ "$cur" != "$maxv" ]; then state=clamped; saved=""; release "leftover clamp from an earlier run"; fi
+
+while :; do
+    cap=$(num "$(rd "$B/capacity")"); on=$(num "$(rd "$U/online")"); st=$(rd "$B/status"); cur_i=$(abs "$(rd "$B/current_now")")
+    if marker_ok; then now_armed=1; else now_armed=0; fi
+    if [ "$now_armed" != "$armed" ]; then
+        if [ "$now_armed" = 1 ]; then log info "ARMED: verified on this kernel ($(tr '\n' ' ' < "$MARKER"))"; else log warning "MONITOR-ONLY: $MARKER_WHY"; fi
+        armed=$now_armed
+    fi
+
+    if [ "$armed" = 1 ]; then
+        if [ "$state" = released ]; then
+            if [ "$on" = 1 ] && [ "$cap" -ge "$TARGET" ] && [ $((SECONDS - last_change)) -ge "$MIN_HOLD_S" ]; then clamp; fi
+        else
+            if [ "$on" != 1 ]; then release "charger unplugged"
+            elif [ "$cap" -le "$RELEASE_AT" ]; then release "battery down to ${cap}%"
+            elif [ $((SECONDS - clamped_at)) -ge "$SETTLE_S" ]; then
+                if [ "$st" = Charging ] && [ "$cur_i" -gt "$WATCH_UA" ]; then bad=$((bad + 1)); else bad=0; fi
+                if [ "$bad" -ge "$BAD_LIMIT" ]; then
+                    log err "WATCHDOG: still charging at ${cur_i}uA ${SETTLE_S}s after the clamp; the limit has no effect on this Thor. Releasing, deleting the marker, exiting. $(snap)"
+                    release "limit ineffective"; rm -f "$MARKER"; exit 78
+                fi
+            fi
+        fi
+    elif [ "$state" = clamped ]; then
+        release "verification no longer valid"
+    fi
+    if [ "$FAILS" -ge 3 ]; then
+        log err "three failed limit writes in a row; releasing and stopping. $(snap)"
+        release "repeated write failures"; exit 78
+    fi
+
+    if [ $((SECONDS - last_beat)) -ge "$HEARTBEAT_S" ]; then
+        log info "heartbeat: armed=$armed state=$state; $(snap)"; last_beat=$SECONDS
+    fi
+    sleep "$POLL_S" & wait $!
+done

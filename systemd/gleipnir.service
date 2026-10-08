@@ -1,0 +1,21 @@
+[Unit]
+Description=Gleipnir: Thor 80% battery charge ceiling (monitor-only until verified)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/var/local/bin/gleipnir
+# Safety net for a crash or SIGKILL: put back a leftover clamp (the daemon also restores on every normal exit).
+ExecStopPost=-/var/local/bin/gleipnir --restore
+# Exit 78 = no usable limit, or the limit proved ineffective: stay failed and visible instead of looping.
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=78
+StateDirectory=gleipnir
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+MemoryMax=32M
+
+[Install]
+WantedBy=multi-user.target
