@@ -124,7 +124,7 @@ function Content() {
                     h(DFL.PanelSectionRow, {
                         children: h(DFL.Field, {
                             label: "What it does",
-                            description: "About 40 seconds. Needs the charger plugged in and the battery between 10 and 90%. It stops charging briefly, checks that charging really stopped and then resumed, and puts everything back. Gleipnir does nothing until this passes, and it must be re-run after a kernel update."
+                            description: "Two to four minutes: the limit takes about a minute to act. Needs the charger plugged in and the battery between 10 and 90%. It stops charging briefly, checks that charging really stopped and then resumed, and puts everything back. Gleipnir does nothing until this passes, and it must be re-run after a kernel update."
                         })
                     }),
                     h(DFL.PanelSectionRow, {
