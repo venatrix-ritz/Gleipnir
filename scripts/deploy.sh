@@ -17,7 +17,7 @@ echo "==> Copying Gleipnir to ${THOR_HOST}:${PLUGIN_DIR}"
 ssh "${THOR_HOST}" "rm -rf /tmp/gleipnir-stage && mkdir -p /tmp/gleipnir-stage/bin /tmp/gleipnir-stage/systemd /tmp/gleipnir-stage/dist"
 scp plugin.json package.json main.py LICENSE "${THOR_HOST}:/tmp/gleipnir-stage/"
 scp bin/gleipnir "${THOR_HOST}:/tmp/gleipnir-stage/bin/"
-scp systemd/gleipnir.service "${THOR_HOST}:/tmp/gleipnir-stage/systemd/"
+scp systemd/gleipnir.service systemd/gleipnir-sleep.service "${THOR_HOST}:/tmp/gleipnir-stage/systemd/"
 scp dist/index.js "${THOR_HOST}:/tmp/gleipnir-stage/dist/"
 ssh "${THOR_HOST}" "
     sudo mkdir -p '${PLUGIN_DIR}' &&

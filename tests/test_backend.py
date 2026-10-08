@@ -32,7 +32,9 @@ def setup(tmp: Path):
     (tmp / "bin").mkdir(); (tmp / "systemd").mkdir(); (tmp / "dst").mkdir(); (tmp / "state").mkdir()
     (tmp / "bin" / "gleipnir").write_text("#!/bin/sh\nexit 0\n")
     (tmp / "systemd" / "gleipnir.service").write_text("[Service]\n")
+    (tmp / "systemd" / "gleipnir-sleep.service").write_text("[Service]\n")
     m.BIN_SRC, m.UNIT_SRC = tmp / "bin" / "gleipnir", tmp / "systemd" / "gleipnir.service"
+    m.SLEEP_UNIT_SRC, m.SLEEP_UNIT_DST = tmp / "systemd" / "gleipnir-sleep.service", tmp / "dst" / "gleipnir-sleep.service"
     m.BIN_DST, m.UNIT_DST = tmp / "dst" / "gleipnir", tmp / "dst" / "gleipnir.service"
     m.STATE_DIR = tmp / "state"; m.TEST_OUT = m.STATE_DIR / "ui-test.out"
     CALLS.clear()
@@ -49,7 +51,7 @@ def test_install_then_status():
         assert m.BIN_DST.exists() and m.UNIT_DST.exists()
         if os.name == "posix":
             assert oct(m.BIN_DST.stat().st_mode & 0o777) == "0o755"
-        assert cmds()[:2] == ["daemon-reload", "enable --now gleipnir.service"], cmds()
+        assert cmds()[:3] == ["daemon-reload", "enable --now gleipnir.service", "enable gleipnir-sleep.service"], cmds()
         assert st["installed"] and st["active"] == "active" and st["daemon"]["capacity"] == 70
 
 
@@ -65,7 +67,7 @@ def test_disable_restores_and_stops():
     with tempfile.TemporaryDirectory() as d:
         setup(Path(d)); m._run = fake_run_factory(); asyncio.run(m.Plugin().install()); CALLS.clear()
         asyncio.run(m.Plugin().set_enabled(False))
-        assert cmds()[0] == "disable --now gleipnir.service"
+        assert cmds()[:2] == ["disable gleipnir-sleep.service", "disable --now gleipnir.service"], cmds()
         assert any(c[-1] == "--restore" for c in CALLS), CALLS
 
 
