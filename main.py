@@ -18,10 +18,13 @@ from pathlib import Path
 PLUGIN_DIR = Path(__file__).resolve().parent
 BIN_SRC = PLUGIN_DIR / "bin" / "gleipnir"
 UNIT_SRC = PLUGIN_DIR / "systemd" / "gleipnir.service"
+SLEEP_UNIT_SRC = PLUGIN_DIR / "systemd" / "gleipnir-sleep.service"
 BIN_DST = Path("/var/local/bin/gleipnir")
 UNIT_DST = Path("/etc/systemd/system/gleipnir.service")
+SLEEP_UNIT_DST = Path("/etc/systemd/system/gleipnir-sleep.service")
 STATE_DIR = Path("/var/lib/gleipnir")
 SERVICE = "gleipnir.service"
+SLEEP_SERVICE = "gleipnir-sleep.service"
 TEST_OUT = STATE_DIR / "ui-test.out"
 SYSTEMCTL = "systemctl"
 JOURNALCTL = "journalctl"
@@ -98,8 +101,11 @@ class Plugin:
         os.chmod(BIN_DST, 0o755)
         shutil.copyfile(UNIT_SRC, UNIT_DST)
         os.chmod(UNIT_DST, 0o644)
+        shutil.copyfile(SLEEP_UNIT_SRC, SLEEP_UNIT_DST)
+        os.chmod(SLEEP_UNIT_DST, 0o644)
         _run([SYSTEMCTL, "daemon-reload"])
         _run([SYSTEMCTL, "enable", "--now", SERVICE])
+        _run([SYSTEMCTL, "enable", SLEEP_SERVICE])  # runs --pre-sleep before every suspend; it does nothing until a test has passed
         return self._status_sync()
 
     async def install(self) -> dict:
@@ -111,7 +117,9 @@ class Plugin:
             if not self._installed():
                 return self._install_sync()
             _run([SYSTEMCTL, "enable", "--now", SERVICE])
+            _run([SYSTEMCTL, "enable", SLEEP_SERVICE])
             return self._status_sync()
+        _run([SYSTEMCTL, "disable", SLEEP_SERVICE])
         _run([SYSTEMCTL, "disable", "--now", SERVICE])  # stopping releases any clamp
         if BIN_DST.exists():
             _run([str(BIN_DST), "--restore"], timeout=10)
@@ -121,10 +129,11 @@ class Plugin:
         return await asyncio.to_thread(self._set_enabled_sync, bool(enabled))
 
     def _uninstall_sync(self) -> dict:
+        _run([SYSTEMCTL, "disable", SLEEP_SERVICE])
         _run([SYSTEMCTL, "disable", "--now", SERVICE])
         if BIN_DST.exists():
             _run([str(BIN_DST), "--restore"], timeout=10)
-        for path in (UNIT_DST, BIN_DST, STATE_DIR / "verified"):
+        for path in (UNIT_DST, SLEEP_UNIT_DST, BIN_DST, STATE_DIR / "verified"):
             try:
                 path.unlink()
             except FileNotFoundError:

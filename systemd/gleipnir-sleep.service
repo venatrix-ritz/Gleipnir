@@ -1,0 +1,16 @@
+[Unit]
+Description=Gleipnir: hold the charge cap through sleep (clamp just before suspend)
+Before=sleep.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# systemd-sleep on the Thor does not run hooks from /etc, so a unit ordered before sleep.target does the job (tested 2026-10-08).
+ExecStart=/var/local/bin/gleipnir --pre-sleep
+ExecStop=-/var/local/bin/gleipnir --post-sleep
+TimeoutStartSec=30
+TimeoutStopSec=60
+
+[Install]
+WantedBy=sleep.target

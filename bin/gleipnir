@@ -33,6 +33,7 @@
 #         gleipnir --test          show the test plan (nothing is written)
 #         gleipnir --test --run    the supervised test; needs root, charger plugged in, battery 10-90 %
 #         gleipnir --restore       undo a leftover clamp (used by the unit's ExecStopPost)
+#         gleipnir --pre-sleep     clamp just before suspend (gleipnir-sleep.service); --post-sleep releases it if the daemon is not running
 # Exit codes: 0 clean, 3 no limit node, 4 test preconditions not met, 5 test failed, 78 unsupported/ineffective.
 set -uo pipefail
 export LC_ALL=C
@@ -55,6 +56,10 @@ BAD_LIMIT=3
 APPLY_WAIT_S="${GLEIPNIR_APPLY_WAIT_S:-120}"   # how long a write may take to show in the node (about 60 s was seen on the Thor)
 HOLD_S="${GLEIPNIR_HOLD_S:-20}"                # a restored node must keep reading released this long before the restore counts
 WAIT_STEP_DS="${GLEIPNIR_WAIT_STEP_DS:-10}"    # poll step while waiting, in tenths of a second
+SLEEP_FROM="${GLEIPNIR_SLEEP_CLAMP_FROM:-70}"  # clamp just before a sleep from this charge up (any charger state); below it the Thor may charge asleep
+SLEEP_APPLY_WAIT_S="${GLEIPNIR_SLEEP_APPLY_WAIT_S:-10}"   # the pre-sleep hook may not hold up a suspend for long
+SLEEP_FILE="$STATE_DIR/sleep-clamp"            # written by --pre-sleep BEFORE the clamp, so the daemon takes the clamp over instead of undoing it
+SYSTEMCTL="${GLEIPNIR_SYSTEMCTL:-systemctl}"
 
 # --- helpers ---------------------------------------------------------------------------------------------------
 rd()  { cat "$1" 2>/dev/null || echo "?"; }
@@ -143,7 +148,7 @@ marker_ok() {   # sets MARKER_WHY
 mode=daemon; run=0; json=0
 for a in "$@"; do
     case "$a" in
-        --status) mode=status ;; --test) mode=test ;; --restore) mode=restore ;; --run) run=1 ;; --json) json=1 ;;
+        --status) mode=status ;; --test) mode=test ;; --restore) mode=restore ;; --pre-sleep) mode=presleep ;; --post-sleep) mode=postsleep ;; --run) run=1 ;; --json) json=1 ;;
         *) echo "unknown option $a" >&2; exit 1 ;;
     esac
 done
@@ -159,6 +164,38 @@ if [ "$mode" = restore ]; then
         if ensure_released "$maxv"; then log warning "--restore: found leftover clamp ($cur), restored $maxv"; else log err "--restore could NOT restore $maxv to $LIM"; fi
     fi
     exit 0
+fi
+
+# The kernel freezes the daemon in a native (s2idle) sleep, so a battery below the cap keeps charging past it while the Thor sleeps
+# (2026-10-08: slept at 78 % on a charger, woke at 88 %). A clamp the firmware already holds survives the sleep, so the
+# sleep unit writes one just before the freeze. The daemon, still running until then, must see it as ours: the file goes first.
+if [ "$mode" = presleep ]; then
+    marker_ok || { log info "pre-sleep: not armed ($MARKER_WHY); nothing done"; exit 0; }
+    cap=$(num "$(rd "$B/capacity")"); cur=$(num "$(rd "$LIM")")
+    if [ "$cap" -lt "$SLEEP_FROM" ]; then log info "pre-sleep: ${cap}% is below ${SLEEP_FROM}%; no clamp; $(snap)"; exit 0; fi
+    if is_clamped "$cur"; then log info "pre-sleep: already clamped; $(snap)"; exit 0; fi
+    mkdir -p "$STATE_DIR" 2>/dev/null
+    printf 'saved=%s
+at=%s
+' "$cur" "$(date +%s)" > "$SLEEP_FILE.tmp" && mv "$SLEEP_FILE.tmp" "$SLEEP_FILE"
+    APPLY_WAIT_S=$SLEEP_APPLY_WAIT_S
+    if write_limit "$CLAMP_VAL" exact; then
+        log info "PRE-SLEEP CLAMP at ${cap}%: limit $cur -> $CLAMP_VAL; $(snap)"
+    else
+        rm -f "$SLEEP_FILE"   # a clamp that lands late still holds through the sleep; the daemon undoes it on resume (LATE CLAMP)
+        log err "pre-sleep: the clamp did not show within ${SLEEP_APPLY_WAIT_S}s; sleeping unclamped; $(snap)"
+    fi
+    exit 0
+fi
+if [ "$mode" = postsleep ]; then
+    # With the daemon running it takes the clamp over and applies its normal rules (releases when unplugged or at 77 % and below).
+    if "$SYSTEMCTL" is-active --quiet gleipnir 2>/dev/null; then log info "post-sleep: daemon is running; it takes over; $(snap)"; exit 0; fi
+    cur=$(num "$(rd "$LIM")")
+    if is_clamped "$cur" && [ "$cur" != "$maxv" ]; then
+        if ensure_released "$maxv"; then log warning "post-sleep: no daemon; released the sleep clamp, restored $maxv; $(snap)"
+        else log err "post-sleep: no daemon and could NOT release the sleep clamp. Run: echo $maxv | sudo tee $LIM"; fi
+    fi
+    rm -f "$SLEEP_FILE"; exit 0
 fi
 
 if [ "$mode" = status ] && [ "$json" = 1 ]; then
@@ -315,6 +352,14 @@ while :; do
         idle_polls=0
     fi
     lim_now=$(num "$(rd "$LIM")")
+    if [ "$state" = released ] && [ -r "$SLEEP_FILE" ]; then   # a clamp from --pre-sleep: take it over (a stale file is dropped)
+        f_at=$(num "$(sed -n 's/^at=//p' "$SLEEP_FILE" | head -1)")
+        if is_clamped "$lim_now" && [ "$lim_now" != "$maxv" ]; then
+            saved=$(num "$(sed -n 's/^saved=//p' "$SLEEP_FILE" | head -1)"); is_clamped "$saved" && saved=""
+            state=clamped; clamped_at=$SECONDS; last_change=$SECONDS; bad=0; rm -f "$SLEEP_FILE"
+            log info "ADOPT: the limit reads $lim_now from the pre-sleep clamp; holding it under the normal rules; $(snap)"
+        elif [ $(( $(date +%s) - f_at )) -gt 300 ]; then rm -f "$SLEEP_FILE"; fi
+    fi
     if [ "$state" = released ] && is_clamped "$lim_now" && [ "$lim_now" != "$maxv" ]; then
         log warning "LATE CLAMP: the limit reads $lim_now but this daemon holds no clamp (a write from an earlier test or run that took effect late); writing $maxv back. $(snap)"
         node_write "$maxv" || log err "could not write $maxv to $LIM"
