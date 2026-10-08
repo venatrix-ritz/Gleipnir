@@ -153,8 +153,16 @@ class Plugin:
             await asyncio.to_thread(_run, [SYSTEMCTL, "stop", SERVICE])
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         out = open(TEST_OUT, "w", encoding="utf-8")
-        self._proc = await asyncio.create_subprocess_exec(
-            str(script), "--test", "--run", stdout=out, stderr=subprocess.STDOUT)
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                str(script), "--test", "--run", stdout=out, stderr=subprocess.STDOUT)
+        except OSError as err:
+            out.close()
+            if was_active:  # the test never started: put the daemon back
+                await asyncio.to_thread(_run, [SYSTEMCTL, "start", SERVICE])
+            self._test = {"running": False, "started": 0.0, "finished": time.time(), "rc": 127, "verdict": "refused"}
+            TEST_OUT.write_text(f"Could not start the test: {err}\n", encoding="utf-8")
+            return dict(self._test)
         self._test = {"running": True, "started": time.time(), "finished": 0.0, "rc": None, "verdict": ""}
 
         async def _finish() -> None:

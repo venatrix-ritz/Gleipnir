@@ -115,6 +115,19 @@ def test_test_run_stops_and_restarts_daemon():
         tmp = Path(d); setup(tmp); m._run = fake_run_factory(active="active"); asyncio.run(go(tmp))
 
 
+def test_failed_test_start_puts_the_daemon_back():
+    async def go(tmp: Path):
+        m.BIN_DST = tmp / "no-such-script"     # exec fails: the daemon must not be left stopped
+        m.BIN_SRC = tmp / "no-such-script"
+        plugin = m.Plugin()
+        res = await plugin.start_test()
+        assert not res["running"] and res["verdict"] == "refused", res
+        assert cmds().index("stop gleipnir.service") < cmds().index("start gleipnir.service"), cmds()
+        assert "Could not start the test" in (await plugin.get_test())["tail"][0]
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d); setup(tmp); m._run = fake_run_factory(active="active"); asyncio.run(go(tmp))
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
