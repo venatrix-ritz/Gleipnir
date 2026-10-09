@@ -144,6 +144,18 @@ class Plugin:
     async def uninstall(self) -> dict:
         return await asyncio.to_thread(self._uninstall_sync)
 
+    def _set_sleep_floor_sync(self, value: int) -> dict:
+        script = BIN_DST if BIN_DST.exists() else BIN_SRC
+        rc, out = _run([str(script), "--set-sleep-floor", str(int(value))], timeout=10)
+        status = self._status_sync()
+        if rc != 0:
+            status["error"] = out.strip().splitlines()[-1] if out.strip() else f"set-sleep-floor exited {rc}"
+        return status
+
+    async def set_sleep_floor(self, value: int) -> dict:
+        """The sleep setting: clamp before a native sleep from this charge up (0 every sleep, 70 from 70 %, 101 never)."""
+        return await asyncio.to_thread(self._set_sleep_floor_sync, int(value))
+
     async def restore_now(self) -> dict:
         """Undo a leftover clamp immediately."""
         script = BIN_DST if BIN_DST.exists() else BIN_SRC

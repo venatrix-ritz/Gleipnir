@@ -227,10 +227,33 @@ has "logs it" "$LOG" "PRE-SLEEP CLAMP"; sim_stop
 echo "S19b pre-sleep clamps on battery too (a charger plugged in while asleep must not charge past the cap)"
 new_world 78 Discharging 0 9000000; marker; sim_start effective; presleep env
 eq "clamped with the charger out" "$(limit)" 0; sim_stop
-echo "S20 pre-sleep below the floor does nothing"
-new_world 60 Charging 1 9000000; marker; sim_start effective; presleep env
+echo "S20 pre-sleep below the floor does nothing (floor 70 set through the environment default)"
+new_world 60 Charging 1 9000000; marker; sim_start effective; presleep env GLEIPNIR_SLEEP_CLAMP_FROM=70
 eq "not clamped at 60 %" "$(limit)" 9000000
 eq "no sleep file" "$([ -e "$T/state/sleep-clamp" ] && echo yes || echo no)" no; sim_stop
+echo "S20b the default setting clamps every sleep, even at 30 %"
+new_world 30 Charging 1 9000000; marker; sim_start effective; presleep env
+eq "clamped at 30 %" "$(limit)" 0; sim_stop
+echo "S20c the saved setting wins over the default: 85 leaves a 78 % sleep unclamped, 101 never clamps, junk is ignored"
+new_world 78 Charging 1 9000000; marker; sim_start effective; echo 85 > "$T/state/sleep-floor"; presleep env
+eq "floor 85: not clamped at 78 %" "$(limit)" 9000000
+echo 78 > "$T/state/sleep-floor"; presleep env; eq "floor 78: clamped at 78 %" "$(limit)" 0; sim_stop
+new_world 99 Charging 1 9000000; marker; sim_start effective; echo 101 > "$T/state/sleep-floor"; presleep env
+eq "floor 101: never clamps" "$(limit)" 9000000; sim_stop
+new_world 50 Charging 1 9000000; marker; sim_start effective; echo "junk" > "$T/state/sleep-floor"; presleep env
+eq "junk setting falls back to the default (0): clamped" "$(limit)" 0; sim_stop
+echo "S20d --set-sleep-floor writes the setting, rejects bad values, and --status --json reports it with the sleep type"
+new_world 80 Charging 1 9000000; marker
+GLEIPNIR_ALLOW_NONROOT=1 bash "$SCRIPT" --set-sleep-floor 70 2>>"$T/stderr"; eq "saved" "$(cat "$T/state/sleep-floor")" 70
+GLEIPNIR_ALLOW_NONROOT=1 bash "$SCRIPT" --set-sleep-floor 500 2>/dev/null; eq "500 rejected (exit 1)" "$?" 1
+GLEIPNIR_ALLOW_NONROOT=1 bash "$SCRIPT" --set-sleep-floor abc 2>/dev/null; eq "abc rejected (exit 1)" "$?" 1
+eq "setting unchanged after bad values" "$(cat "$T/state/sleep-floor")" 70
+printf '#!/bin/sh
+echo "ARMADA_SUSPEND_MODE=s2idle"
+' > "$T/device-env"; chmod +x "$T/device-env"
+J=$(GLEIPNIR_DEVICE_ENV="$T/device-env" bash "$SCRIPT" --status --json 2>>"$T/stderr")
+case "$J" in *'"sleep_floor":70'*) ok "status json has sleep_floor 70";; *) bad "status json sleep_floor" "$J";; esac
+case "$J" in *'"sleep_mode":"s2idle"'*) ok "status json has the sleep type";; *) bad "status json sleep_mode" "$J";; esac
 echo "S21 pre-sleep when not armed does nothing"
 new_world 85 Charging 1 9000000; sim_start effective; presleep env
 eq "not clamped without a marker" "$(limit)" 9000000; has "says why" "$LOG" "not armed"; sim_stop
