@@ -23,6 +23,7 @@ const cancelTest = () => call("cancel_test");
 const getTest = () => call("get_test");
 const getLog = (lines) => call("get_log", lines);
 const restoreNow = () => call("restore_now");
+const setSleepFloor = (value) => call("set_sleep_floor", value);
 
 const h = SP_JSX.jsx;
 const hs = SP_JSX.jsxs;
@@ -106,6 +107,28 @@ function Content() {
                             layout: "below", disabled: busy,
                             onClick: () => act(install, "Installed. It only watches until the test passes."),
                             children: "Install daemon"
+                        })
+                    }),
+                    status.installed && h(DFL.PanelSectionRow, {
+                        children: h(DFL.Field, {
+                            label: "Sleep type",
+                            description: d.sleep_mode === "fake" ? "Fake sleep: Gleipnir keeps running while the Thor sleeps. Change it in Armada Control."
+                                : d.sleep_mode === "s2idle" ? "Native sleep: the system freezes Gleipnir, so it clamps just before the sleep (setting below). Change it in Armada Control."
+                                : "Unknown (set in Armada Control)"
+                        })
+                    }),
+                    status.installed && d.sleep_mode !== "fake" && h(DFL.PanelSectionRow, {
+                        children: h(DFL.DropdownItem, {
+                            label: "Charge cap while asleep",
+                            description: "Only for native sleep",
+                            rgOptions: [
+                                { data: 0, label: "Always hold the cap (no charging while asleep)" },
+                                { data: 70, label: "Hold from 70% up (charges asleep below that)" },
+                                { data: 101, label: "Off (the cap can be passed while asleep)" }
+                            ],
+                            selectedOption: d.sleep_floor === undefined ? 0 : d.sleep_floor,
+                            onChange: (opt) => act(() => setSleepFloor(opt.data)),
+                            disabled: busy
                         })
                     }),
                     status.installed && h(DFL.PanelSectionRow, {
