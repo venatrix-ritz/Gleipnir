@@ -209,7 +209,9 @@ at=%s
     exit 0
 fi
 if [ "$mode" = postsleep ]; then
-    # With the daemon running it takes the clamp over and applies its normal rules (releases when unplugged or at 77 % and below).
+    # The sleep is over: end the daemon's hold on the clamp. With the daemon running it then applies its normal rules at its next
+    # poll (releases when unplugged or at 77 % and below); without it, release here.
+    rm -f "$SLEEP_FILE"
     if "$SYSTEMCTL" is-active --quiet gleipnir 2>/dev/null; then log info "post-sleep: daemon is running; it takes over; $(snap)"; exit 0; fi
     cur=$(num "$(rd "$LIM")")
     if is_clamped "$cur" && [ "$cur" != "$maxv" ]; then
@@ -323,6 +325,7 @@ for _ in $(seq 1 "${GLEIPNIR_WAIT_S:-30}"); do
     sleep 1
 done
 
+rm -f "$SLEEP_FILE"   # a new daemon run cannot be in the middle of a sleep it knows about
 state=released; saved=""; clamped_at=0; last_change=-$MIN_HOLD_S; bad=0; armed=-1; last_beat=0
 idle_polls=0; last_idle_warn=-600
 
@@ -377,8 +380,8 @@ while :; do
         f_at=$(num "$(sed -n 's/^at=//p' "$SLEEP_FILE" | head -1)")
         if is_clamped "$lim_now" && [ "$lim_now" != "$maxv" ]; then
             saved=$(num "$(sed -n 's/^saved=//p' "$SLEEP_FILE" | head -1)"); is_clamped "$saved" && saved=""
-            state=clamped; clamped_at=$SECONDS; last_change=$SECONDS; bad=0; rm -f "$SLEEP_FILE"
-            log info "ADOPT: the limit reads $lim_now from the pre-sleep clamp; holding it under the normal rules; $(snap)"
+            state=clamped; clamped_at=$SECONDS; last_change=$SECONDS; bad=0   # the file stays: it makes the daemon HOLD until --post-sleep
+            log info "ADOPT: the limit reads $lim_now from the pre-sleep clamp; holding it until the sleep is over; $(snap)"
         elif [ $(( $(date +%s) - f_at )) -gt 300 ]; then rm -f "$SLEEP_FILE"; fi
     fi
     if [ "$state" = released ] && is_clamped "$lim_now" && [ "$lim_now" != "$maxv" ]; then
@@ -395,7 +398,13 @@ while :; do
         if [ "$state" = released ]; then
             if [ "$on" = 1 ] && [ "$cap" -ge "$TARGET" ] && [ $((SECONDS - last_change)) -ge "$MIN_HOLD_S" ]; then clamp; fi
         else
-            if [ "$on" != 1 ]; then release "charger unplugged"
+            sleep_hold=0
+            if [ -r "$SLEEP_FILE" ]; then
+                f_at=$(num "$(sed -n 's/^at=//p' "$SLEEP_FILE" | head -1)")
+                [ $(( $(date +%s) - f_at )) -le 3600 ] && sleep_hold=1   # an hour at most, in case --post-sleep never runs
+            fi
+            if [ "$sleep_hold" = 1 ]; then :   # a clamp placed for a sleep: the 77 % and unplug rules wait until --post-sleep removes the file
+            elif [ "$on" != 1 ]; then release "charger unplugged"
             elif [ "$cap" -le "$RELEASE_AT" ]; then release "battery down to ${cap}%"
             elif [ $((SECONDS - clamped_at)) -ge "$SETTLE_S" ]; then
                 # current_now is positive while charging and negative while discharging; the status says Charging in both cases (seen 2026-10-08

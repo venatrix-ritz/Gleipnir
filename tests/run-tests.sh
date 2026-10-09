@@ -263,11 +263,22 @@ presleep env; sleep 4
 eq "clamp kept (no LATE CLAMP undo)" "$(limit)" 0
 has "daemon adopts it" "$LOG" "ADOPT"
 if grep -q "LATE CLAMP" "$LOG" 2>/dev/null; then bad "no late-clamp undo" "undone"; else ok "no late-clamp undo"; fi
-echo 77 > "$PS/battery/capacity"; wait_limit 9000000 6; eq "released at 77 %" "$(limit)" 9000000; has "logs the release" "$LOG" "battery down to 77%"; daemon_stop; sim_stop
-echo "S22b an adopted clamp is released at once when the charger is out on resume"
-new_world 85 Charging 1 9000000; marker; sim_start effective; daemon_start; sleep 3
-presleep env; sleep 2; echo 0 > "$PS/qcom-battmgr-usb/online"; wait_limit 9000000 6
-eq "released on unplug" "$(limit)" 9000000; has "says why" "$LOG" "charger unplugged"; daemon_stop; sim_stop
+echo 77 > "$PS/battery/capacity"; sleep 3; eq "held at 77 % while the sleep is not over" "$(limit)" 0
+rm -f "$T/state/sleep-clamp"   # what --post-sleep does after the resume
+wait_limit 9000000 6; eq "released at 77 % once the sleep is over" "$(limit)" 9000000; has "logs the release" "$LOG" "battery down to 77%"; daemon_stop; sim_stop
+echo "S22c a clamp placed at 50 % for a sleep is held (the 77 % release rule must wait) and released after the resume"
+new_world 50 Charging 1 9000000; marker; sim_start effective; daemon_start; sleep 3
+presleep env; sleep 5
+eq "still clamped 5 s after the pre-sleep clamp, battery at 50 %" "$(limit)" 0
+if grep -q "RELEASE" "$LOG" 2>/dev/null; then bad "no release during the hold" "released"; else ok "no release during the hold"; fi
+GLEIPNIR_SYSTEMCTL=true bash "$SCRIPT" --post-sleep 2>>"$T/stderr"   # the resume: the daemon runs, so it applies its rules
+wait_limit 9000000 6; eq "released after the resume" "$(limit)" 9000000; daemon_stop; sim_stop
+echo "S22b an adopted clamp is held through an unplug until the sleep is over, then released (70 %: below the daemon's own 80 % target)"
+new_world 70 Charging 1 9000000; marker; sim_start effective; daemon_start; sleep 3
+presleep env; sleep 2; echo 0 > "$PS/qcom-battmgr-usb/online"; sleep 3
+eq "held while the sleep is not over, even unplugged" "$(limit)" 0
+rm -f "$T/state/sleep-clamp"; wait_limit 9000000 6
+eq "released on unplug once the sleep is over" "$(limit)" 9000000; has "says why" "$LOG" "charger unplugged"; daemon_stop; sim_stop
 echo "S23 post-sleep with no daemon releases the sleep clamp; with a daemon it leaves it"
 new_world 78 Charging 1 9000000; marker; sim_start effective; presleep env
 GLEIPNIR_SYSTEMCTL=true bash "$SCRIPT" --post-sleep 2>>"$T/stderr"; eq "daemon active: clamp left for it" "$(limit)" 0
