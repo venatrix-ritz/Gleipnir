@@ -1,6 +1,6 @@
 # Changelog
 
-No version numbers have been cut yet.
+Versions: 0.1.0 (2026-10-07, first tag), 0.2.0 (2026-10-08, adds the sleep clamp and its setting, below).
 
 ## Unreleased
 - **Fixed:** a pre-sleep clamp was undone within seconds when the battery was at or below 77 % (2026-10-08 22:21, 64 %: the Thor slept unclamped and gained 10 points). The daemon adopted the clamp and its own "release at 77 % and below" rule fired in the same pass; the earlier tests hid it because they ran at 79 to 80 %, or the daemon was frozen first. The daemon now holds a clamp placed for a sleep until `--post-sleep` removes the sleep file after the resume (at most an hour), then applies its normal rules at the next poll. Reproduced without a sleep by running `--pre-sleep` by hand and reading the node twice a second. 5 new checks (102 pass). Verified on the Thor: slept 9.5 minutes at 60 % on a charger and woke at 60 % (counter +42 mAh, from the seconds before the sleep).

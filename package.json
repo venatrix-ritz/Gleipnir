@@ -1,6 +1,6 @@
 {
   "name": "gleipnir",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Gleipnir: 80% battery charge ceiling for the AYN Thor on Armada OS, as a Decky plugin with a root daemon, a measured self-test and logging",
   "type": "module",
   "keywords": ["decky-plugin", "ayn-thor", "armada", "battery", "charge-limit"],
