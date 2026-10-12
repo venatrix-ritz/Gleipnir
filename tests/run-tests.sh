@@ -98,6 +98,12 @@ echo "S6 marker for another kernel disarms"
 new_world 90 Charging 1 9000000; marker some-other-kernel; sim_start effective; daemon_start; sleep 3
 eq "no clamp with a stale marker" "$(limit)" 9000000; has "explains" "$LOG" "re-run the test"; daemon_stop; sim_stop
 
+echo "S6b marker with FEX emulated kernel (6.11.0) is adopted on real kernel"
+new_world 90 Charging 1 9000000; marker 6.11.0; sim_start effective; daemon_start; wait_limit 0 6
+eq "clamped when adopting FEX marker" "$(limit)" 0
+has "adopted FEX marker" "$T/state/verified" "^kernel=test-1"
+daemon_stop; sim_stop
+
 echo "S7 SIGTERM while clamped restores"
 new_world 90 Charging 1 4680000; marker; sim_start effective; daemon_start; wait_limit 0 6
 daemon_stop; eq "restored on TERM" "$(limit)" 4680000

@@ -61,8 +61,28 @@ class Plugin:
         self._proc: asyncio.subprocess.Process | None = None
         self._test_task: asyncio.Task | None = None
 
+    def _sync_installed(self) -> None:
+        if not self._installed():
+            return
+        changed = False
+        for src, dst, mode in ((BIN_SRC, BIN_DST, 0o755), (UNIT_SRC, UNIT_DST, 0o644), (SLEEP_UNIT_SRC, SLEEP_UNIT_DST, 0o644)):
+            try:
+                if src.exists() and (not dst.exists() or src.read_bytes() != dst.read_bytes()):
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(src, dst)
+                    os.chmod(dst, mode)
+                    changed = True
+            except OSError:
+                pass
+        if changed:
+            _run([SYSTEMCTL, "daemon-reload"])
+            _, active = _run([SYSTEMCTL, "is-active", SERVICE], timeout=5)
+            if active.strip() == "active":
+                _run([SYSTEMCTL, "restart", SERVICE])
+
     async def _main(self) -> None:
-        """Called by Decky on load. Does nothing to charging: the daemon is only installed when asked."""
+        """Called by Decky on load. Updates installed files if the plugin was upgraded; does not change enabled state."""
+        await asyncio.to_thread(self._sync_installed)
 
     # -- status ---------------------------------------------------------------------------------------------
     def _installed(self) -> bool:
