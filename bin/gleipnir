@@ -44,7 +44,19 @@ B="$PS/battery"
 U="$PS/qcom-battmgr-usb"
 STATE_DIR="${GLEIPNIR_STATE_DIR:-/var/lib/gleipnir}"
 MARKER="$STATE_DIR/verified"
-KERNEL="${GLEIPNIR_KERNEL:-$(uname -r)}"
+host_kernel() {
+    local k=""
+    # Under x86_64 emulation (e.g. FEX-Emu running Decky Loader on ARM64), uname -r
+    # returns the emulator's kernel version (6.11.0). Query the host system daemon.
+    if command -v hostnamectl >/dev/null 2>&1; then
+        k=$(hostnamectl 2>/dev/null | sed -n 's/^[[:space:]]*Kernel:[[:space:]]*Linux[[:space:]]*//p' | head -1 | tr -d ' \r\n')
+    fi
+    if [ -z "$k" ] && command -v busctl >/dev/null 2>&1; then
+        k=$(busctl get-property org.freedesktop.hostname1 /org/freedesktop/hostname1 org.freedesktop.hostname1 KernelRelease 2>/dev/null | sed -n 's/^s "\(.*\)"/\1/p' | tr -d ' \r\n')
+    fi
+    echo "${k:-$(uname -r)}"
+}
+KERNEL="${GLEIPNIR_KERNEL:-$(host_kernel)}"
 TARGET=80
 RELEASE_AT=77
 CLAMP_DETECT=1000                    # a limit at or below this is ours (the firmware never reports this little)
@@ -149,6 +161,11 @@ marker_ok() {   # sets MARKER_WHY
     [ -r "$MARKER" ] || { MARKER_WHY="not verified: no marker at $MARKER (run: sudo gleipnir --test --run)"; return 1; }
     local n v k
     n=$(sed -n 's/^node=//p' "$MARKER" | head -1); v=$(sed -n 's/^value=//p' "$MARKER" | head -1); k=$(sed -n 's/^kernel=//p' "$MARKER" | head -1)
+    if [ "$k" = "6.11.0" ] && [ "$KERNEL" != "6.11.0" ]; then
+        log info "marker had emulated kernel 6.11.0 from FEX; updating marker to host kernel $KERNEL"
+        sed -i "s/^kernel=.*/kernel=$KERNEL/" "$MARKER" 2>/dev/null || true
+        k="$KERNEL"
+    fi
     if [ "$n" != "$LIM" ] || [ "$v" != "$CLAMP_VAL" ] || [ "$k" != "$KERNEL" ]; then
         MARKER_WHY="verification is for node '$n' value '$v' kernel '$k', this system is '$LIM' '$CLAMP_VAL' '$KERNEL'; re-run the test"
         return 1

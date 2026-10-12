@@ -130,6 +130,17 @@ def test_failed_test_start_puts_the_daemon_back():
         tmp = Path(d); setup(tmp); m._run = fake_run_factory(active="active"); asyncio.run(go(tmp))
 
 
+def test_main_syncs_upgraded_files():
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d); setup(tmp); m._run = fake_run_factory(active="active")
+        asyncio.run(m.Plugin().install()); CALLS.clear()
+        # Simulate plugin upgrade by writing new content to BIN_SRC
+        m.BIN_SRC.write_text("#!/bin/sh\n# upgraded\nexit 0\n")
+        asyncio.run(m.Plugin()._main())
+        assert m.BIN_DST.read_text() == "#!/bin/sh\n# upgraded\nexit 0\n"
+        assert "daemon-reload" in cmds() and "restart gleipnir.service" in cmds()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
