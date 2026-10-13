@@ -1,6 +1,9 @@
-# Gleipnir
+# Disclaimer
+This project was developed with AI assistance, hand-edited, audited, and extensively tested on physical hardware.
 
-> **Disclaimer:** This project was developed with AI assistance, hand-edited, audited, and extensively tested on physical hardware.
+---
+
+# Gleipnir
 
 A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin for the **AYN Thor** on **Armada OS** that holds the battery at **80 %** while plugged in, to slow battery wear. Named for the thin ribbon that bound Fenrir: a small thing that restrains a large force.
 
