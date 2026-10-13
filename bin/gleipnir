@@ -75,6 +75,7 @@ SLEEP_APPLY_WAIT_S="${GLEIPNIR_SLEEP_APPLY_WAIT_S:-10}"   # the pre-sleep hook m
 SLEEP_FILE="$STATE_DIR/sleep-clamp"            # written by --pre-sleep BEFORE the clamp, so the daemon takes the clamp over instead of undoing it
 SYSTEMCTL="${GLEIPNIR_SYSTEMCTL:-systemctl}"
 DEVICE_ENV="${GLEIPNIR_DEVICE_ENV:-/usr/libexec/armada/device-env}"
+DEBUG="${GLEIPNIR_DEBUG:-1}"
 
 # --- helpers ---------------------------------------------------------------------------------------------------
 rd()  { cat "$1" 2>/dev/null || echo "?"; }
@@ -109,6 +110,7 @@ FAILS=0
 # the old value, and about a minute later it read the clamp and charging had stopped. A write is therefore judged by
 # waiting for the node to show it, up to APPLY_WAIT_S, and a restore only counts once the node has kept showing the
 # released value for HOLD_S, because a clamp written earlier can still be on its way.
+dlog() { [ "${DEBUG:-0}" = 1 ] || return 0; log info "debug: $*"; }
 step_sleep() { sleep "$((WAIT_STEP_DS / 10)).$((WAIT_STEP_DS % 10))"; }
 steps_for() { echo $(($1 * 10 / WAIT_STEP_DS)); }   # seconds -> poll steps
 node_write() { echo "$1" > "$LIM" 2>/dev/null; }
@@ -117,30 +119,41 @@ value_ok() {   # value_ok VALUE exact|released READBACK ; "released" accepts any
     if [ "$2" = exact ]; then [ "$3" = "$1" ]; else [ "$(num "$3")" -gt "$CLAMP_DETECT" ]; fi
 }
 wait_for() {   # wait_for VALUE exact|released : poll the node until it shows the value or APPLY_WAIT_S has passed; RB = last readback
-    local i=0 max; max=$(steps_for "$APPLY_WAIT_S")
+    local max; max=$(steps_for "$APPLY_WAIT_S")
+    WAIT_STEPS=0
     while :; do
         RB=$(rd "$LIM")
         value_ok "$1" "$2" "$RB" && return 0
-        [ "$i" -ge "$max" ] && return 1
-        i=$((i + 1)); step_sleep
+        [ "$WAIT_STEPS" -ge "$max" ] && return 1
+        WAIT_STEPS=$((WAIT_STEPS + 1)); step_sleep
     done
 }
 write_limit() {   # write_limit VALUE exact|released : write, wait for the node to show it, count failures
+    dlog "node write: sending $1 to $LIM (current: $(rd "$LIM"))"
     node_write "$1"
-    if wait_for "$1" "$2"; then FAILS=0; return 0; fi
+    if wait_for "$1" "$2"; then
+        dlog "node write: verified $1 on $LIM after $((WAIT_STEPS * WAIT_STEP_DS / 10)).$((WAIT_STEPS * WAIT_STEP_DS % 10))s (readback '$RB')"
+        FAILS=0; return 0
+    fi
     FAILS=$((FAILS + 1)); log err "write of $1 to $LIM did not show in ${APPLY_WAIT_S}s (readback '$RB'; failure $FAILS in a row)"
     return 1
 }
 ensure_released() {   # ensure_released TARGET : put the limit back and see that it STAYS back; up to 3 rounds
     local round=0 i max; max=$(steps_for "$HOLD_S")
+    dlog "ensure_released: target $1, hold window ${HOLD_S}s"
     while [ "$round" -lt 3 ]; do
         round=$((round + 1))
+        dlog "ensure_released: round $round writing $1"
         write_limit "$1" released || continue
         i=0
         while [ "$i" -lt "$max" ]; do
             step_sleep; i=$((i + 1))
-            is_clamped "$(num "$(rd "$LIM")")" && continue 2   # a clamp landed after our write: write again
+            if is_clamped "$(num "$(rd "$LIM")")"; then
+                dlog "ensure_released: clamp landed during hold check (readback $(rd "$LIM")), retrying round"
+                continue 2   # a clamp landed after our write: write again
+            fi
         done
+        dlog "ensure_released: hold verified, limit released at $(rd "$LIM")"
         return 0
     done
     return 1
@@ -185,7 +198,7 @@ fi
 mode=daemon; run=0; json=0
 for a in "$@"; do
     case "$a" in
-        --status) mode=status ;; --test) mode=test ;; --restore) mode=restore ;; --pre-sleep) mode=presleep ;; --post-sleep) mode=postsleep ;; --run) run=1 ;; --json) json=1 ;;
+        --status) mode=status ;; --test) mode=test ;; --restore) mode=restore ;; --pre-sleep) mode=presleep ;; --post-sleep) mode=postsleep ;; --run) run=1 ;; --json) json=1 ;; --debug) debug=1; DEBUG=1 ;;
         *) echo "unknown option $a" >&2; exit 1 ;;
     esac
 done
@@ -207,6 +220,7 @@ fi
 # (2026-10-08: slept at 78 % on a charger, woke at 88 %). A clamp the firmware already holds survives the sleep, so the
 # sleep unit writes one just before the freeze. The daemon, still running until then, must see it as ours: the file goes first.
 if [ "$mode" = presleep ]; then
+    dlog "pre-sleep hook: cap=$(rd "$B/capacity")% status=$(rd "$B/status") usb=$(rd "$U/online") limit=$(rd "$LIM") floor=$(sleep_floor)"
     marker_ok || { log info "pre-sleep: not armed ($MARKER_WHY); nothing done"; exit 0; }
     cap=$(num "$(rd "$B/capacity")"); cur=$(num "$(rd "$LIM")")
     floor=$(sleep_floor)
@@ -226,6 +240,7 @@ at=%s
     exit 0
 fi
 if [ "$mode" = postsleep ]; then
+    dlog "post-sleep hook: cap=$(rd "$B/capacity")% status=$(rd "$B/status") usb=$(rd "$U/online") limit=$(rd "$LIM")"
     # The sleep is over: end the daemon's hold on the clamp. With the daemon running it then applies its normal rules at its next
     # poll (releases when unplugged or at 77 % and below); without it, release here.
     rm -f "$SLEEP_FILE"
@@ -379,7 +394,9 @@ log info "started: node $LIM ($KIND), clamp value $CLAMP_VAL, kernel $KERNEL, ta
 cur=$(num "$(rd "$LIM")")
 if is_clamped "$cur" && [ "$cur" != "$maxv" ]; then state=clamped; saved=""; release "leftover clamp from an earlier run"; fi
 
+poll_num=0
 while :; do
+    poll_num=$((poll_num + 1))
     cap=$(num "$(rd "$B/capacity")"); on=$(num "$(rd "$U/online")"); st=$(rd "$B/status"); cur_i=$(abs "$(rd "$B/current_now")"); cur_s=$(num "$(rd "$B/current_now")")
     # Monitoring: nothing is clamped, a charger is attached and the battery is clearly below the cap, yet it is not charging.
     # Seen on the Thor on 2026-10-08: after a clamp held for about 90 s at 80 % was released, the status stayed 'Not charging'.
@@ -440,6 +457,34 @@ while :; do
         log err "three failed limit writes in a row; releasing and stopping. $(snap)"
         release "repeated write failures"; exit 78
     fi
+
+    dec=""
+    if [ "$armed" != 1 ]; then
+        dec="monitor-only ($MARKER_WHY)"
+    elif [ "$state" = released ]; then
+        if [ "$on" != 1 ]; then
+            dec="unplugged, discharging on battery"
+        elif [ "$cap" -lt "$TARGET" ]; then
+            dec="charging toward ${TARGET}% (limit: $lim_now)"
+        elif [ $((SECONDS - last_change)) -lt "$MIN_HOLD_S" ]; then
+            dec="target reached (${cap}% >= ${TARGET}%), hold rate-limit wait ($((SECONDS - last_change))s / ${MIN_HOLD_S}s)"
+        else
+            dec="target reached (${cap}% >= ${TARGET}%), clamping"
+        fi
+    else
+        if [ "${sleep_hold:-0}" = 1 ]; then
+            dec="holding pre-sleep clamp"
+        elif [ "$on" != 1 ]; then
+            dec="unplugged, releasing clamp"
+        elif [ "$cap" -le "$RELEASE_AT" ]; then
+            dec="dropped to ${cap}% (<= ${RELEASE_AT}%), releasing clamp"
+        elif [ $((SECONDS - clamped_at)) -lt "$SETTLE_S" ]; then
+            dec="holding clamp at ${cap}% (settling $((SECONDS - clamped_at))s / ${SETTLE_S}s, current: ${cur_s}uA)"
+        else
+            dec="holding clamp at ${cap}% (settled, watchdog strikes: $bad/$BAD_LIMIT, current: ${cur_s}uA)"
+        fi
+    fi
+    dlog "POLL #$poll_num: state=$state armed=$armed cap=${cap}% usb=$on status=$st current=${cur_s}uA volt=$(rd "$B/voltage_now")uV temp=$(rd "$B/temp") limit=$lim_now | $dec"
 
     if [ $((SECONDS - last_beat)) -ge "$HEARTBEAT_S" ]; then
         log info "heartbeat: armed=$armed state=$state; $(snap)"; last_beat=$SECONDS
