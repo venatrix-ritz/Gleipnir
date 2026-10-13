@@ -1,5 +1,7 @@
 # Gleipnir
 
+> **Disclaimer:** This project was developed with AI assistance, hand-edited, audited, and extensively tested on physical hardware.
+
 A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin for the **AYN Thor** on **Armada OS** that holds the battery at **80 %** while plugged in, to slow battery wear. Named for the thin ribbon that bound Fenrir: a small thing that restrains a large force.
 
 > **Status: verified on one Thor (2026-10-08, Armada `20261006.9c7dd3e`, kernel 7.2.6).** Writing `0` to `constant_charge_current` stopped charging, the 80 % clamp held through 18 minutes of a game, it released at 77 % and charging resumed. Other builds are untested. Gleipnir still installs in **watch-only** mode and does nothing to charging until its built-in measured test passes on your kernel. Read [docs/evidence.md](docs/evidence.md) for what is and is not known. Not affiliated with AYN or Armada.

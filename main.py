@@ -1,5 +1,7 @@
 """Gleipnir: Decky backend for the Thor's 80 % battery ceiling.
 
+Disclaimer: This project was developed with AI assistance, hand-edited, audited, and extensively tested on physical hardware.
+
 Runs as root (plugin.json flags ["root"], the same flag Armada's own privileged plugins use). All it does is install,
 start, stop and test the `gleipnir` daemon (bin/gleipnir) and report on it; the charging logic and its safety rules live
 in that script. Nothing here writes the battery limit directly.
