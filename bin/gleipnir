@@ -1,4 +1,5 @@
 #!/bin/bash
+# Disclaimer: This project was developed with AI assistance, hand-edited, audited, and extensively tested on physical hardware.
 # SPDX-License-Identifier: GPL-2.0-or-later (derived from Armada scripts; see LICENSES/GPL-2.0.txt)
 # Adapted from MgeeeeK/thor-armada (Mragank Shekhar), system_files/usr/libexec/armada/thor-charge-limit,
 # commits a70010a + 7e17352. Kept: the 80 %/77 % hysteresis idea and the clamp-through-the-current-limit approach.
