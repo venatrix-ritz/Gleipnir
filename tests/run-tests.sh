@@ -291,6 +291,13 @@ GLEIPNIR_SYSTEMCTL=true bash "$SCRIPT" --post-sleep 2>>"$T/stderr"; eq "daemon a
 GLEIPNIR_SYSTEMCTL=false GLEIPNIR_HOLD_S=1 bash "$SCRIPT" --post-sleep 2>>"$T/stderr"; eq "no daemon: released" "$(limit)" 9000000
 eq "sleep file removed" "$([ -e "$T/state/sleep-clamp" ] && echo yes || echo no)" no; sim_stop
 
+echo "S24 a FEX-stamped marker is judged adopted by --status and --pre-sleep, but only the daemon rewrites it"
+new_world 85 Charging 1 9000000; marker 6.11.0
+bash "$SCRIPT" --status --json > "$T/json"; has "status reads the marker as verified" "$T/json" '"verified":true'
+eq "--status leaves the FEX kernel in the file" "$(sed -n 's/^kernel=//p' "$T/state/verified")" 6.11.0
+bash "$SCRIPT" --pre-sleep >/dev/null 2>&1
+eq "--pre-sleep leaves the FEX kernel in the file" "$(sed -n 's/^kernel=//p' "$T/state/verified")" 6.11.0
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]
