@@ -4,8 +4,7 @@ After=multi-user.target
 
 [Service]
 Type=simple
-Environment=GLEIPNIR_DEBUG=1
-ExecStart=/var/local/bin/gleipnir --debug
+ExecStart=/var/local/bin/gleipnir
 # Safety net for a crash or SIGKILL: put back a leftover clamp (the daemon also restores on every normal exit).
 ExecStopPost=-/var/local/bin/gleipnir --restore
 # Exit 78 = no usable limit, or the limit proved ineffective: stay failed and visible instead of looping.
