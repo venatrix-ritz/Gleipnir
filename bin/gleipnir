@@ -76,7 +76,7 @@ SLEEP_APPLY_WAIT_S="${GLEIPNIR_SLEEP_APPLY_WAIT_S:-10}"   # the pre-sleep hook m
 SLEEP_FILE="$STATE_DIR/sleep-clamp"            # written by --pre-sleep BEFORE the clamp, so the daemon takes the clamp over instead of undoing it
 SYSTEMCTL="${GLEIPNIR_SYSTEMCTL:-systemctl}"
 DEVICE_ENV="${GLEIPNIR_DEVICE_ENV:-/usr/libexec/armada/device-env}"
-DEBUG="${GLEIPNIR_DEBUG:-1}"
+DEBUG="${GLEIPNIR_DEBUG:-0}"
 
 # --- helpers ---------------------------------------------------------------------------------------------------
 rd()  { cat "$1" 2>/dev/null || echo "?"; }
