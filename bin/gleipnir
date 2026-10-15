@@ -170,14 +170,13 @@ sleep_mode() {    # Armada's sleep type: s2idle (native, freezes this daemon) or
     echo "${m:-unknown}"
 }
 
-marker_ok() {   # sets MARKER_WHY
-    MARKER_WHY=""
+marker_ok() {   # sets MARKER_WHY; MARKER_ADOPT=1 when the file still holds a FEX kernel that the daemon must rewrite
+    MARKER_WHY=""; MARKER_ADOPT=0
     [ -r "$MARKER" ] || { MARKER_WHY="not verified: no marker at $MARKER (run: sudo gleipnir --test --run)"; return 1; }
     local n v k
     n=$(sed -n 's/^node=//p' "$MARKER" | head -1); v=$(sed -n 's/^value=//p' "$MARKER" | head -1); k=$(sed -n 's/^kernel=//p' "$MARKER" | head -1)
     if [ "$k" = "6.11.0" ] && [ "$KERNEL" != "6.11.0" ]; then
-        log info "marker had emulated kernel 6.11.0 from FEX; updating marker to host kernel $KERNEL"
-        sed -i "s/^kernel=.*/kernel=$KERNEL/" "$MARKER" 2>/dev/null || true
+        MARKER_ADOPT=1   # read-only callers (--status, the sleep hooks) judge the marker as adopted and leave the file alone
         k="$KERNEL"
     fi
     if [ "$n" != "$LIM" ] || [ "$v" != "$CLAMP_VAL" ] || [ "$k" != "$KERNEL" ]; then
@@ -424,6 +423,10 @@ while :; do
         node_write "$maxv" || log err "could not write $maxv to $LIM"
     fi
     if marker_ok; then now_armed=1; else now_armed=0; fi
+    if [ "$MARKER_ADOPT" = 1 ]; then   # only the running daemon rewrites the marker
+        log info "marker had emulated kernel 6.11.0 from FEX; updating marker to host kernel $KERNEL"
+        sed -i "s/^kernel=.*/kernel=$KERNEL/" "$MARKER" 2>/dev/null || true
+    fi
     if [ "$now_armed" != "$armed" ]; then
         if [ "$now_armed" = 1 ]; then log info "ARMED: verified on this kernel ($(tr '\n' ' ' < "$MARKER"))"; else log warning "MONITOR-ONLY: $MARKER_WHY"; fi
         armed=$now_armed
