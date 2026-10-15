@@ -297,6 +297,11 @@ bash "$SCRIPT" --status --json > "$T/json"; has "status reads the marker as veri
 eq "--status leaves the FEX kernel in the file" "$(sed -n 's/^kernel=//p' "$T/state/verified")" 6.11.0
 bash "$SCRIPT" --pre-sleep >/dev/null 2>&1
 eq "--pre-sleep leaves the FEX kernel in the file" "$(sed -n 's/^kernel=//p' "$T/state/verified")" 6.11.0
+echo "S25 POLL lines are written only with debug on"
+new_world 60 Discharging 0 9000000; sim_start effective; export GLEIPNIR_DEBUG=1; daemon_start; unset GLEIPNIR_DEBUG; sleep 2; daemon_stop
+has "debug on: POLL logged" "$LOG" "debug: POLL"; sim_stop
+new_world 60 Discharging 0 9000000; sim_start effective; export GLEIPNIR_DEBUG=0; daemon_start; unset GLEIPNIR_DEBUG; sleep 2; daemon_stop
+eq "debug off: no POLL lines" "$(grep -c 'debug: POLL' "$LOG")" 0; sim_stop
 
 echo
 echo "passed $PASS, failed $FAIL"
