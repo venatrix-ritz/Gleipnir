@@ -291,6 +291,12 @@ GLEIPNIR_SYSTEMCTL=true bash "$SCRIPT" --post-sleep 2>>"$T/stderr"; eq "daemon a
 GLEIPNIR_SYSTEMCTL=false GLEIPNIR_HOLD_S=1 bash "$SCRIPT" --post-sleep 2>>"$T/stderr"; eq "no daemon: released" "$(limit)" 9000000
 eq "sleep file removed" "$([ -e "$T/state/sleep-clamp" ] && echo yes || echo no)" no; sim_stop
 
+echo "S25 POLL lines are written only with debug on"
+new_world 60 Discharging 0 9000000; sim_start effective; export GLEIPNIR_DEBUG=1; daemon_start; unset GLEIPNIR_DEBUG; sleep 2; daemon_stop
+has "debug on: POLL logged" "$LOG" "debug: POLL"; sim_stop
+new_world 60 Discharging 0 9000000; sim_start effective; export GLEIPNIR_DEBUG=0; daemon_start; unset GLEIPNIR_DEBUG; sleep 2; daemon_stop
+eq "debug off: no POLL lines" "$(grep -c 'debug: POLL' "$LOG")" 0; sim_stop
+
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

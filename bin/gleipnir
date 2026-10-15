@@ -199,7 +199,7 @@ fi
 mode=daemon; run=0; json=0
 for a in "$@"; do
     case "$a" in
-        --status) mode=status ;; --test) mode=test ;; --restore) mode=restore ;; --pre-sleep) mode=presleep ;; --post-sleep) mode=postsleep ;; --run) run=1 ;; --json) json=1 ;; --debug) debug=1; DEBUG=1 ;;
+        --status) mode=status ;; --test) mode=test ;; --restore) mode=restore ;; --pre-sleep) mode=presleep ;; --post-sleep) mode=postsleep ;; --run) run=1 ;; --json) json=1 ;; --debug) DEBUG=1 ;;
         *) echo "unknown option $a" >&2; exit 1 ;;
     esac
 done
@@ -221,7 +221,7 @@ fi
 # (2026-10-08: slept at 78 % on a charger, woke at 88 %). A clamp the firmware already holds survives the sleep, so the
 # sleep unit writes one just before the freeze. The daemon, still running until then, must see it as ours: the file goes first.
 if [ "$mode" = presleep ]; then
-    dlog "pre-sleep hook: cap=$(rd "$B/capacity")% status=$(rd "$B/status") usb=$(rd "$U/online") limit=$(rd "$LIM") floor=$(sleep_floor)"
+    [ "$DEBUG" = 1 ] && dlog "pre-sleep hook: cap=$(rd "$B/capacity")% status=$(rd "$B/status") usb=$(rd "$U/online") limit=$(rd "$LIM") floor=$(sleep_floor)"
     marker_ok || { log info "pre-sleep: not armed ($MARKER_WHY); nothing done"; exit 0; }
     cap=$(num "$(rd "$B/capacity")"); cur=$(num "$(rd "$LIM")")
     floor=$(sleep_floor)
@@ -241,7 +241,7 @@ at=%s
     exit 0
 fi
 if [ "$mode" = postsleep ]; then
-    dlog "post-sleep hook: cap=$(rd "$B/capacity")% status=$(rd "$B/status") usb=$(rd "$U/online") limit=$(rd "$LIM")"
+    [ "$DEBUG" = 1 ] && dlog "post-sleep hook: cap=$(rd "$B/capacity")% status=$(rd "$B/status") usb=$(rd "$U/online") limit=$(rd "$LIM")"
     # The sleep is over: end the daemon's hold on the clamp. With the daemon running it then applies its normal rules at its next
     # poll (releases when unplugged or at 77 % and below); without it, release here.
     rm -f "$SLEEP_FILE"
@@ -485,7 +485,7 @@ while :; do
             dec="holding clamp at ${cap}% (settled, watchdog strikes: $bad/$BAD_LIMIT, current: ${cur_s}uA)"
         fi
     fi
-    dlog "POLL #$poll_num: state=$state armed=$armed cap=${cap}% usb=$on status=$st current=${cur_s}uA volt=$(rd "$B/voltage_now")uV temp=$(rd "$B/temp") limit=$lim_now | $dec"
+    [ "$DEBUG" = 1 ] && dlog "POLL #$poll_num: state=$state armed=$armed cap=${cap}% usb=$on status=$st current=${cur_s}uA volt=$(rd "$B/voltage_now")uV temp=$(rd "$B/temp") limit=$lim_now | $dec"
 
     if [ $((SECONDS - last_beat)) -ge "$HEARTBEAT_S" ]; then
         log info "heartbeat: armed=$armed state=$state; $(snap)"; last_beat=$SECONDS
