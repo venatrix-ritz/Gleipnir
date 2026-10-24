@@ -60,7 +60,8 @@ host_kernel() {
 KERNEL="${GLEIPNIR_KERNEL:-$(host_kernel)}"
 TARGET=80
 RELEASE_AT=77
-CLAMP_DETECT=1000                    # a limit at or below this is ours (the firmware never reports this little)
+CLAMP_UA=100000                      # the clamp value: 100 mA, the minimum safe value on the Thor per a reviewer (armada#677, docs/evidence.md); who measured 1000 swinging the charger draw 0.2-5 W
+CLAMP_DETECT=$CLAMP_UA               # a limit at or below this is ours (the firmware never reports this little)
 POLL_S="${GLEIPNIR_POLL_S:-30}"
 SETTLE_S="${GLEIPNIR_SETTLE_S:-120}"
 MIN_HOLD_S="${GLEIPNIR_MIN_HOLD_S:-120}"
@@ -98,9 +99,9 @@ snap() {
 # --- which limit node does this kernel have --------------------------------------------------------------------
 LIM=""; MAX=""; CLAMP_VAL=""; KIND=""
 if [ -e "$B/charge_control_limit" ]; then            # MgeeeeK's patched qcom_battmgr
-    LIM="$B/charge_control_limit"; MAX="$B/charge_control_limit_max"; CLAMP_VAL=1000; KIND="fork charge_control_limit"
+    LIM="$B/charge_control_limit"; MAX="$B/charge_control_limit_max"; CLAMP_VAL=$CLAMP_UA; KIND="fork charge_control_limit"
 elif [ -e "$B/constant_charge_current" ]; then       # stock Armada, kernel patch 0903
-    LIM="$B/constant_charge_current"; MAX="$B/constant_charge_current_max"; CLAMP_VAL=0; KIND="Armada constant_charge_current"
+    LIM="$B/constant_charge_current"; MAX="$B/constant_charge_current_max"; CLAMP_VAL=$CLAMP_UA; KIND="Armada constant_charge_current"
 fi
 maxv=$(num "$(rd "$MAX")"); [ "$maxv" -gt "$CLAMP_DETECT" ] || maxv=9000000
 is_clamped() { [ "$(num "${1:-}")" -le "$CLAMP_DETECT" ]; }
