@@ -38,13 +38,13 @@ sim_start() {  # sim_start effective|ineffective|late [LAG_S] : 'late' reacts to
           [ "$v" != "$last" ] && { last=$v; changed=$SECONDS; }
           seen=$v; [ "$1" = late ] && [ $((SECONDS - changed)) -lt "$lag" ] && seen=${prev:-$v}
           [ $((SECONDS - changed)) -ge "$lag" ] && prev=$v
-          if [ "$1" != ineffective ] && [ "$seen" -le 1000 ]; then echo "Not charging" > "$PS/battery/status"; echo 0 > "$PS/battery/current_now"
+          if [ "$1" != ineffective ] && [ "$seen" -le 100000 ]; then echo "Not charging" > "$PS/battery/status"; echo 0 > "$PS/battery/current_now"
           elif [ -r "$PS/battery/status" ] && [ "$(cat "$PS/usb_gone" 2>/dev/null)" != 1 ]; then echo Charging > "$PS/battery/status"; echo 1500000 > "$PS/battery/current_now"; fi
       done ) &
     SIM=$!; PIDS+=("$SIM")
 }
 sim_stop() { kill "$SIM" 2>/dev/null; wait "$SIM" 2>/dev/null; }
-marker() { printf 'node=%s\nvalue=0\nkernel=%s\nverified_at=now\n' "$PS/battery/constant_charge_current" "${1:-test-1}" > "$T/state/verified"; }
+marker() { printf 'node=%s\nvalue=100000\nkernel=%s\nverified_at=now\n' "$PS/battery/constant_charge_current" "${1:-test-1}" > "$T/state/verified"; }
 limit() { cat "$PS/battery/constant_charge_current"; }
 daemon_start() { bash "$SCRIPT" 2>>"$T/stderr" & D=$!; PIDS+=("$D"); }
 daemon_stop() { kill -TERM "$D" 2>/dev/null; wait "$D" 2>/dev/null; }
@@ -65,16 +65,16 @@ has "logs the release" "$LOG" "leftover clamp"; daemon_stop; sim_stop
 
 echo "S3 verified: clamp at 80 %, put the firmware's own value back at 77 %"
 new_world 85 Charging 1 4680000; marker; sim_start effective; daemon_start
-wait_limit 0 6; eq "clamped to 0" "$(limit)" 0
+wait_limit 100000 6; eq "clamped to 100000" "$(limit)" 100000
 has "logs the clamp with a snapshot" "$LOG" "CLAMP at 85%"
-sleep 3; eq "stays clamped at 85 %" "$(limit)" 0
+sleep 3; eq "stays clamped at 85 %" "$(limit)" 100000
 echo 76 > "$PS/battery/capacity"; wait_limit 4680000 5; eq "released to the value found, not the maximum" "$(limit)" 4680000
 has "logs the release" "$LOG" "RELEASE (battery down to 76%)"
 sleep 2; has "heartbeat logged" "$LOG" "heartbeat"
 daemon_stop; sim_stop
 
 echo "S4 unplug releases"
-new_world 90 Charging 1 9000000; marker; sim_start effective; daemon_start; wait_limit 0 6
+new_world 90 Charging 1 9000000; marker; sim_start effective; daemon_start; wait_limit 100000 6
 echo 0 > "$PS/qcom-battmgr-usb/online"; wait_limit 9000000 5; eq "released on unplug" "$(limit)" 9000000
 has "logs why" "$LOG" "charger unplugged"; daemon_stop; sim_stop
 
@@ -87,10 +87,10 @@ eq "marker deleted" "$([ -e "$T/state/verified" ] && echo present || echo gone)"
 has "logs the watchdog" "$LOG" "WATCHDOG"; sim_stop
 
 echo "S5b discharging under load while the status says Charging must not trip the watchdog"
-new_world 90 Charging 1 9000000; marker; sim_start effective; daemon_start; wait_limit 0 6
+new_world 90 Charging 1 9000000; marker; sim_start effective; daemon_start; wait_limit 100000 6
 sim_stop; echo Charging > "$PS/battery/status"; echo -1500000 > "$PS/battery/current_now"; sleep 8
 eq "daemon still running" "$(kill -0 "$D" 2>/dev/null && echo yes || echo no)" yes
-eq "clamp still held" "$(limit)" 0
+eq "clamp still held" "$(limit)" 100000
 eq "marker kept" "$([ -e "$T/state/verified" ] && echo present || echo gone)" present
 if grep -q WATCHDOG "$LOG" 2>/dev/null; then bad "no watchdog on discharge" "fired"; else ok "no watchdog on discharge"; fi; daemon_stop
 
@@ -99,13 +99,13 @@ new_world 90 Charging 1 9000000; marker some-other-kernel; sim_start effective; 
 eq "no clamp with a stale marker" "$(limit)" 9000000; has "explains" "$LOG" "re-run the test"; daemon_stop; sim_stop
 
 echo "S6b marker with FEX emulated kernel (6.11.0) is adopted on real kernel"
-new_world 90 Charging 1 9000000; marker 6.11.0; sim_start effective; daemon_start; wait_limit 0 6
-eq "clamped when adopting FEX marker" "$(limit)" 0
+new_world 90 Charging 1 9000000; marker 6.11.0; sim_start effective; daemon_start; wait_limit 100000 6
+eq "clamped when adopting FEX marker" "$(limit)" 100000
 has "adopted FEX marker" "$T/state/verified" "^kernel=test-1"
 daemon_stop; sim_stop
 
 echo "S7 SIGTERM while clamped restores"
-new_world 90 Charging 1 4680000; marker; sim_start effective; daemon_start; wait_limit 0 6
+new_world 90 Charging 1 4680000; marker; sim_start effective; daemon_start; wait_limit 100000 6
 daemon_stop; eq "restored on TERM" "$(limit)" 4680000
 has "logs the exit release" "$LOG" "RELEASE (daemon exiting)"
 [ "$(limit)" = 4680000 ] || { echo "--- log:"; cat "$LOG"; echo "--- stderr:"; tail -5 "$T/stderr"; }
@@ -178,7 +178,7 @@ has "logs it" "$LOG" "LATE CLAMP"; daemon_stop; sim_stop
 echo "S17 the settle logic against a node that shows writes late and drops writes while one is pending"
 export GLEIPNIR_NO_SYSLOG=1; TMPOUT=$(mktemp)
 ( set +u
-  T=$(mktemp -d); NODE=$T/node; LIM=$NODE; CLAMP_DETECT=1000; FAILS=0
+  T=$(mktemp -d); NODE=$T/node; LIM=$NODE; CLAMP_DETECT=100000; FAILS=0
   num() { case "${1:-}" in ''|*[!0-9-]*) echo 0 ;; *) echo "$1" ;; esac; }
   log() { :; }
   is_clamped() { [ "$(num "${1:-}")" -le "$CLAMP_DETECT" ]; }
@@ -226,28 +226,28 @@ if grep -q "NOT CHARGING" "$LOG" 2>/dev/null; then bad "no warning inside the 77
 presleep() { GLEIPNIR_SLEEP_APPLY_WAIT_S=5 "$@" bash "$SCRIPT" --pre-sleep 2>>"$T/stderr"; }
 echo "S19 pre-sleep: armed and at or above the floor, the node is clamped and the sleep file is written first"
 new_world 78 Charging 1 9000000; marker; sim_start effective; presleep env
-eq "clamped before the freeze" "$(limit)" 0
+eq "clamped before the freeze" "$(limit)" 100000
 eq "sleep file written" "$([ -e "$T/state/sleep-clamp" ] && echo yes || echo no)" yes
 eq "sleep file keeps the old value" "$(sed -n 's/^saved=//p' "$T/state/sleep-clamp")" 9000000
 has "logs it" "$LOG" "PRE-SLEEP CLAMP"; sim_stop
 echo "S19b pre-sleep clamps on battery too (a charger plugged in while asleep must not charge past the cap)"
 new_world 78 Discharging 0 9000000; marker; sim_start effective; presleep env
-eq "clamped with the charger out" "$(limit)" 0; sim_stop
+eq "clamped with the charger out" "$(limit)" 100000; sim_stop
 echo "S20 pre-sleep below the floor does nothing (floor 70 set through the environment default)"
 new_world 60 Charging 1 9000000; marker; sim_start effective; presleep env GLEIPNIR_SLEEP_CLAMP_FROM=70
 eq "not clamped at 60 %" "$(limit)" 9000000
 eq "no sleep file" "$([ -e "$T/state/sleep-clamp" ] && echo yes || echo no)" no; sim_stop
 echo "S20b the default setting clamps every sleep, even at 30 %"
 new_world 30 Charging 1 9000000; marker; sim_start effective; presleep env
-eq "clamped at 30 %" "$(limit)" 0; sim_stop
+eq "clamped at 30 %" "$(limit)" 100000; sim_stop
 echo "S20c the saved setting wins over the default: 85 leaves a 78 % sleep unclamped, 101 never clamps, junk is ignored"
 new_world 78 Charging 1 9000000; marker; sim_start effective; echo 85 > "$T/state/sleep-floor"; presleep env
 eq "floor 85: not clamped at 78 %" "$(limit)" 9000000
-echo 78 > "$T/state/sleep-floor"; presleep env; eq "floor 78: clamped at 78 %" "$(limit)" 0; sim_stop
+echo 78 > "$T/state/sleep-floor"; presleep env; eq "floor 78: clamped at 78 %" "$(limit)" 100000; sim_stop
 new_world 99 Charging 1 9000000; marker; sim_start effective; echo 101 > "$T/state/sleep-floor"; presleep env
 eq "floor 101: never clamps" "$(limit)" 9000000; sim_stop
 new_world 50 Charging 1 9000000; marker; sim_start effective; echo "junk" > "$T/state/sleep-floor"; presleep env
-eq "junk setting falls back to the default (0): clamped" "$(limit)" 0; sim_stop
+eq "junk setting falls back to the default (0): clamped" "$(limit)" 100000; sim_stop
 echo "S20d --set-sleep-floor writes the setting, rejects bad values, and --status --json reports it with the sleep type"
 new_world 80 Charging 1 9000000; marker
 GLEIPNIR_ALLOW_NONROOT=1 bash "$SCRIPT" --set-sleep-floor 70 2>>"$T/stderr"; eq "saved" "$(cat "$T/state/sleep-floor")" 70
@@ -266,28 +266,28 @@ eq "not clamped without a marker" "$(limit)" 9000000; has "says why" "$LOG" "not
 echo "S22 the running daemon takes a pre-sleep clamp over instead of undoing it, and releases it by the normal rules"
 new_world 78 Charging 1 9000000; marker; sim_start effective; daemon_start; sleep 3
 presleep env; sleep 4
-eq "clamp kept (no LATE CLAMP undo)" "$(limit)" 0
+eq "clamp kept (no LATE CLAMP undo)" "$(limit)" 100000
 has "daemon adopts it" "$LOG" "ADOPT"
 if grep -q "LATE CLAMP" "$LOG" 2>/dev/null; then bad "no late-clamp undo" "undone"; else ok "no late-clamp undo"; fi
-echo 77 > "$PS/battery/capacity"; sleep 3; eq "held at 77 % while the sleep is not over" "$(limit)" 0
+echo 77 > "$PS/battery/capacity"; sleep 3; eq "held at 77 % while the sleep is not over" "$(limit)" 100000
 rm -f "$T/state/sleep-clamp"   # what --post-sleep does after the resume
 wait_limit 9000000 6; eq "released at 77 % once the sleep is over" "$(limit)" 9000000; has "logs the release" "$LOG" "battery down to 77%"; daemon_stop; sim_stop
 echo "S22c a clamp placed at 50 % for a sleep is held (the 77 % release rule must wait) and released after the resume"
 new_world 50 Charging 1 9000000; marker; sim_start effective; daemon_start; sleep 3
 presleep env; sleep 5
-eq "still clamped 5 s after the pre-sleep clamp, battery at 50 %" "$(limit)" 0
+eq "still clamped 5 s after the pre-sleep clamp, battery at 50 %" "$(limit)" 100000
 if grep -q "RELEASE" "$LOG" 2>/dev/null; then bad "no release during the hold" "released"; else ok "no release during the hold"; fi
 GLEIPNIR_SYSTEMCTL=true bash "$SCRIPT" --post-sleep 2>>"$T/stderr"   # the resume: the daemon runs, so it applies its rules
 wait_limit 9000000 6; eq "released after the resume" "$(limit)" 9000000; daemon_stop; sim_stop
 echo "S22b an adopted clamp is held through an unplug until the sleep is over, then released (70 %: below the daemon's own 80 % target)"
 new_world 70 Charging 1 9000000; marker; sim_start effective; daemon_start; sleep 3
 presleep env; sleep 2; echo 0 > "$PS/qcom-battmgr-usb/online"; sleep 3
-eq "held while the sleep is not over, even unplugged" "$(limit)" 0
+eq "held while the sleep is not over, even unplugged" "$(limit)" 100000
 rm -f "$T/state/sleep-clamp"; wait_limit 9000000 6
 eq "released on unplug once the sleep is over" "$(limit)" 9000000; has "says why" "$LOG" "charger unplugged"; daemon_stop; sim_stop
 echo "S23 post-sleep with no daemon releases the sleep clamp; with a daemon it leaves it"
 new_world 78 Charging 1 9000000; marker; sim_start effective; presleep env
-GLEIPNIR_SYSTEMCTL=true bash "$SCRIPT" --post-sleep 2>>"$T/stderr"; eq "daemon active: clamp left for it" "$(limit)" 0
+GLEIPNIR_SYSTEMCTL=true bash "$SCRIPT" --post-sleep 2>>"$T/stderr"; eq "daemon active: clamp left for it" "$(limit)" 100000
 GLEIPNIR_SYSTEMCTL=false GLEIPNIR_HOLD_S=1 bash "$SCRIPT" --post-sleep 2>>"$T/stderr"; eq "no daemon: released" "$(limit)" 9000000
 eq "sleep file removed" "$([ -e "$T/state/sleep-clamp" ] && echo yes || echo no)" no; sim_stop
 
