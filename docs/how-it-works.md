@@ -1,7 +1,7 @@
 # How Gleipnir works
 
 ## The idea
-Holding a lithium battery near 80 % instead of 100 % while it sits on a charger slows its wear. Linux has a standard control for this, `charge_control_end_threshold`, but the Thor's firmware ignores it. Gleipnir uses the other control the Thor's kernel offers: the battery manager's **charge current limit**, exposed on Armada's kernel as `constant_charge_current` (and on one community fork as `charge_control_limit`). Armada's patch says writing `0` stops battery charging while the charger keeps powering the system. [See [evidence.md](evidence.md).]
+Holding a lithium battery near 80 % instead of 100 % while it sits on a charger slows its wear. Linux has a standard control for this, `charge_control_end_threshold`, but the Thor's firmware ignores it. Gleipnir uses the other control the Thor's kernel offers: the battery manager's **charge current limit**, exposed on Armada's kernel as `constant_charge_current` (and on one community fork as `charge_control_limit`). Armada's patch says writing `0` stops battery charging while the charger keeps powering the system; Gleipnir writes `100000` (100 mA) instead, because a reviewer reports that lower values make the charger draw swing between 0.2 W and 5 W and can upset simple chargers (see [evidence.md](evidence.md)). [See [evidence.md](evidence.md).]
 
 So: when the Thor is plugged in and at 80 % or more, Gleipnir sets the limit to the "stop charging" value; when you unplug it, or the level falls to 77 %, it puts the limit back to what it found.
 
@@ -17,8 +17,8 @@ So: when the Thor is plugged in and at 80 % or more, Gleipnir sets the limit to 
 ## Which node
 | Node | Clamp value | Where it exists |
 |---|---|---|
-| `charge_control_limit` | `1000` (µA) | MgeeeeK's patched `qcom_battmgr` |
-| `constant_charge_current` | `0` | Armada's kernel (patch `0903`), including the surveyed Thor |
+| `charge_control_limit` | `100000` (µA) | MgeeeeK's patched `qcom_battmgr` |
+| `constant_charge_current` | `100000` (µA) | Armada's kernel (patch `0903`), including the surveyed Thor |
 
 Neither present: the daemon exits `78` and the status says so.
 
