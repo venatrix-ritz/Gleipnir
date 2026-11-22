@@ -1,6 +1,6 @@
 # Gleipnir Design Spec
 
-How Gleipnir works: the modules, the control algorithms with their parameters, the data flow and interfaces, error handling and the operating-system constraints, and the reasons behind the main decisions. Companion to the [application spec](../application-spec/README.md). Written from a read of the repository at commit `14ce5ec` (main, 2026-10-15). Line anchors are to `bin/gleipnir`, `main.py`, `dist/index.js` and the other tracked files; they may drift as the code changes. Anything not traced in the code, or taken from a repo document without re-observation, is marked **unverified** or **repo-reported**.
+How Gleipnir works: the modules, the control algorithms with their parameters, the data flow and interfaces, error handling and the operating-system constraints, and the reasons behind the main decisions. Companion to the [application spec](../application-spec/README.md). Written from a read of the repository at commit `01fe75b` (main, 2026-10-15). Line anchors are to `bin/gleipnir`, `main.py`, `dist/index.js` and the other tracked files; they may drift as the code changes. Anything not traced in the code, or taken from a repo document without re-observation, is marked **unverified** or **repo-reported**.
 
 | # | File | Topic |
 |---|---|---|
