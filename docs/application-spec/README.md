@@ -1,6 +1,6 @@
 # Gleipnir Application Spec
 
-What Gleipnir is, who it is for, what it does on an AYN Thor, how to drive it from the command line and the Decky panel, and what it does not do. Written from a read of the repository at commit `14ce5ec` (main, 2026-10-15). Every statement is anchored to `file:line` in the repo, or to a repo document (`docs/*.md`, `CHANGELOG.md`, `README.md`) and marked as such, or is marked **unverified**. Nothing here was run on a device or re-tested for this spec.
+What Gleipnir is, who it is for, what it does on an AYN Thor, how to drive it from the command line and the Decky panel, and what it does not do. Written from a read of the repository at commit `01fe75b` (main, 2026-10-15). Every statement is anchored to `file:line` in the repo, or to a repo document (`docs/*.md`, `CHANGELOG.md`, `README.md`) and marked as such, or is marked **unverified**. Nothing here was run on a device or re-tested for this spec.
 
 The companion [design spec](../design-spec/README.md) explains how each part works.
 
